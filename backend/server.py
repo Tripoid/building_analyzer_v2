@@ -132,6 +132,7 @@ async def analyze_image(
             },
             "repair_estimate": repair_estimate,
             "processed_images": result["processed_images"],
+            "layers": result.get("layers", []),
         }
 
         logger.info(f"Analysis complete: score={result['overall_score']}, id={analysis_id}")

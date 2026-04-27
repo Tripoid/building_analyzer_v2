@@ -425,14 +425,14 @@ class FacadeAnalyzer:
         logger.info("Scanning wall defects (CLIPSeg)...")
         wall_defect_masks = self._clipseg_segment(
             img_rgb, WALL_DEFECT_PROMPTS, CLASS_MAP_WALL_DEFECTS,
-            original_size, region_mask=bare_wall, threshold=0.30
+            original_size, region_mask=bare_wall, threshold=0.20
         )
 
         # 4. Element defects via CLIPSeg
         logger.info("Scanning element defects (CLIPSeg)...")
         element_defect_masks = self._clipseg_segment(
             img_rgb, ELEMENT_DEFECT_PROMPTS, CLASS_MAP_ELEMENT_DEFECTS,
-            original_size, threshold=0.35
+            original_size, threshold=0.25
         )
 
         # Spatial routing: element defects only within their geometry
@@ -663,27 +663,101 @@ class FacadeAnalyzer:
         cv2.imwrite(path, cv2.cvtColor(repair_canvas, cv2.COLOR_RGB2BGR))
         paths["overlay"] = path
 
-        # 5. Restoration — SD Inpainting for realistic facade repair visualization
+        # 5. Per-layer overlays for interactive viewer
+        logger.info("Generating per-layer overlays...")
+        layers_info = []
+
+        # Defect layers
+        all_defect_colors = {**COLORS_WALL_DEFECTS, **COLORS_ELEMENT_DEFECTS}
+        all_defect_masks_combined = {**wall_defect_masks, **element_defect_masks}
+        for dtype, color in all_defect_colors.items():
+            mask = all_defect_masks_combined.get(dtype)
+            if mask is not None and np.any(mask):
+                layer_canvas = img_rgb.copy()
+                colored = np.zeros_like(layer_canvas)
+                colored[mask] = color
+                layer_canvas = cv2.addWeighted(layer_canvas, 1.0, colored, 0.5, 0)
+                # Draw contours
+                contours, _ = cv2.findContours(
+                    mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                bgr_color = (color[2], color[1], color[0])
+                cv2.drawContours(layer_canvas, contours, -1, bgr_color, 2)
+                layer_path = os.path.join(output_dir, f"layer_defect_{dtype}.jpg")
+                cv2.imwrite(layer_path, cv2.cvtColor(layer_canvas, cv2.COLOR_RGB2BGR))
+                paths[f"layer_defect_{dtype}"] = layer_path
+                from ml_pipeline import DEFECT_DISPLAY_RU
+                layers_info.append({
+                    "id": f"layer_defect_{dtype}",
+                    "type": "defect",
+                    "key": dtype,
+                    "name": DEFECT_DISPLAY_RU.get(dtype, dtype),
+                    "color": f"rgb({color[0]},{color[1]},{color[2]})",
+                })
+
+        # Material layers
+        for mat_name, color in COLORS_MATERIALS.items():
+            mask = material_masks.get(mat_name)
+            if mask is not None and np.any(mask):
+                layer_canvas = img_rgb.copy()
+                colored = np.zeros_like(layer_canvas)
+                colored[mask] = color
+                layer_canvas = cv2.addWeighted(layer_canvas, 0.6, colored, 0.4, 0)
+                layer_path = os.path.join(output_dir, f"layer_material_{mat_name}.jpg")
+                cv2.imwrite(layer_path, cv2.cvtColor(layer_canvas, cv2.COLOR_RGB2BGR))
+                paths[f"layer_material_{mat_name}"] = layer_path
+                from ml_pipeline import MATERIAL_DISPLAY_RU
+                layers_info.append({
+                    "id": f"layer_material_{mat_name}",
+                    "type": "material",
+                    "key": mat_name,
+                    "name": MATERIAL_DISPLAY_RU.get(mat_name, mat_name),
+                    "color": f"rgb({color[0]},{color[1]},{color[2]})",
+                })
+
+        # 6. Restoration — SD Inpainting with building silhouette mask
         logger.info("Generating SD restoration visualization...")
         try:
             from restoration import restore_facade
             restoration_path = os.path.join(output_dir, "restoration.jpg")
-            all_defects_for_restore = {**wall_defect_masks, **element_defect_masks}
+
+            # Use building silhouette as base, combined with defect masks
+            from rembg import remove as rembg_remove
+            rgba_restore = rembg_remove(img_rgb)
+            building_silhouette = (rgba_restore[:, :, 3] > 128).astype(np.uint8)
+
+            # Combine: all defects + expand to cover undetected damage
+            combined_defect_mask = np.zeros(original_size, dtype=np.uint8)
+            for mask in wall_defect_masks.values():
+                if np.any(mask):
+                    combined_defect_mask |= mask.astype(np.uint8)
+            for mask in element_defect_masks.values():
+                if np.any(mask):
+                    combined_defect_mask |= mask.astype(np.uint8)
+
+            # Aggressively expand defect mask to catch nearby undetected damage
+            expand_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+            expanded_mask = cv2.dilate(combined_defect_mask * 255, expand_kernel, iterations=3)
+
+            # Constrain to building silhouette
+            final_restore_mask = {
+                "combined": (expanded_mask > 0) & (building_silhouette > 0)
+            }
+
             restore_facade(
                 img_rgb=img_rgb,
-                defect_masks=all_defects_for_restore,
+                defect_masks=final_restore_mask,
                 output_path=restoration_path,
                 device=str(self.device),
             )
             paths["restoration"] = restoration_path
         except Exception as e:
             logger.warning(f"SD restoration failed (non-critical): {e}")
-            # Fallback: save original as restoration
             fallback_path = os.path.join(output_dir, "restoration.jpg")
             cv2.imwrite(fallback_path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
             paths["restoration"] = fallback_path
 
-        return paths
+        return paths, layers_info
 
     # ─────────────────────────────────────────────────
     # FULL ANALYSIS PIPELINE
@@ -725,7 +799,7 @@ class FacadeAnalyzer:
 
         # Step 5: Visualizations
         logger.info("Step 5: Generating visualizations...")
-        viz_paths = self.generate_visualizations(
+        viz_paths, layers_info = self.generate_visualizations(
             img_rgb, geom_masks, wall_defect_masks, element_defect_masks, material_masks, result_dir
         )
 
@@ -825,6 +899,7 @@ class FacadeAnalyzer:
             "geometry_detections": detections,
             "processed_images": list(viz_paths.keys()),
             "image_paths": viz_paths,
+            "layers": layers_info,
         }
 
     # ─────────────────────────────────────────────────

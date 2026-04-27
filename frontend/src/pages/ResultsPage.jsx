@@ -13,7 +13,7 @@ const IMAGE_META = [
   { type: 'overlay', title: 'Зоны ремонта', desc: 'Области для первоочередного ремонта' },
   { type: 'restoration', title: 'Реставрация фасада', desc: 'ИИ-визуализация восстановленного фасада (Stable Diffusion)' },
 ]
-const TABS = ['Снимки', 'Дефекты', 'Материалы', 'Смета', 'Ведомость']
+const TABS = ['Снимки', 'Слои', 'Дефекты', 'Материалы', 'Смета', 'Ведомость']
 
 function sevColor(s) { return s === 'Высокая' ? 'var(--danger)' : s === 'Средняя' ? 'var(--warning)' : 'var(--success)' }
 function condColor(c) { return c === 'Хорошее' ? 'var(--success)' : c === 'Удовлетворительное' ? 'var(--warning)' : 'var(--danger)' }
@@ -111,10 +111,11 @@ export default function ResultsPage() {
       {/* Tab content */}
       <div style={{ padding:20 }}>
         {tab === 0 && <ImagesTab result={result} imgIdx={imgIdx} setImgIdx={setImgIdx}/>}
-        {tab === 1 && <DamageTab result={result}/>}
-        {tab === 2 && <MaterialsTab result={result}/>}
-        {tab === 3 && <CostTab result={result}/>}
-        {tab === 4 && <RepairTab result={result}/>}
+        {tab === 1 && <LayersTab result={result}/>}
+        {tab === 2 && <DamageTab result={result}/>}
+        {tab === 3 && <MaterialsTab result={result}/>}
+        {tab === 4 && <CostTab result={result}/>}
+        {tab === 5 && <RepairTab result={result}/>}
       </div>
     </div>
   )
@@ -273,6 +274,136 @@ function MaterialsTab({ result }) {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function LayersTab({ result }) {
+  const [activeLayer, setActiveLayer] = useState(null)
+  const [layerLoaded, setLayerLoaded] = useState(false)
+  const layers = result.layers || []
+  const defectLayers = layers.filter(l => l.type === 'defect')
+  const materialLayers = layers.filter(l => l.type === 'material')
+
+  const handleLayerClick = (layer) => {
+    if (activeLayer?.id === layer.id) {
+      setActiveLayer(null)
+    } else {
+      setLayerLoaded(false)
+      setActiveLayer(layer)
+    }
+  }
+
+  return (
+    <div className="slide-up">
+      {/* Image viewer */}
+      <div style={{
+        position: 'relative', borderRadius: 16, overflow: 'hidden',
+        marginBottom: 16, background: 'var(--surface-dark)',
+        minHeight: 200,
+      }}>
+        <img
+          src={getImageUrl(result.id, 'original')}
+          alt="Оригинал"
+          style={{ width: '100%', height: 'auto', maxHeight: '55vh', objectFit: 'contain', display: 'block' }}
+        />
+        {activeLayer && (
+          <img
+            key={activeLayer.id}
+            src={getImageUrl(result.id, activeLayer.id)}
+            alt={activeLayer.name}
+            onLoad={() => setLayerLoaded(true)}
+            style={{
+              position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+              objectFit: 'contain', opacity: layerLoaded ? 0.85 : 0,
+              transition: 'opacity 0.3s ease',
+            }}
+          />
+        )}
+        {activeLayer && (
+          <div style={{
+            position: 'absolute', top: 12, left: 12, padding: '6px 12px',
+            borderRadius: 8, fontSize: 12, fontWeight: 600,
+            background: 'rgba(0,0,0,0.7)', color: '#fff',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: activeLayer.color, flexShrink: 0 }} />
+            {activeLayer.name}
+          </div>
+        )}
+        {!activeLayer && (
+          <div style={{
+            position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            padding: '10px 20px', borderRadius: 12, fontSize: 13, fontWeight: 500,
+            background: 'rgba(0,0,0,0.6)', color: 'rgba(255,255,255,0.8)',
+            pointerEvents: 'none',
+          }}>
+            Выберите слой ниже
+          </div>
+        )}
+      </div>
+
+      {/* Defect layers */}
+      {defectLayers.length > 0 && (
+        <div className="card card--flat" style={{ marginBottom: 12, padding: '14px 16px' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            🐛 Слои дефектов
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {defectLayers.map(l => (
+              <button
+                key={l.id}
+                onClick={() => handleLayerClick(l)}
+                style={{
+                  padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 500,
+                  border: `2px solid ${activeLayer?.id === l.id ? l.color : 'var(--surface-light)'}`,
+                  background: activeLayer?.id === l.id ? `${l.color}22` : 'var(--surface-dark)',
+                  color: activeLayer?.id === l.id ? '#fff' : 'var(--text-secondary)',
+                  cursor: 'pointer', transition: 'all 0.2s',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: l.color, flexShrink: 0 }} />
+                {l.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Material layers */}
+      {materialLayers.length > 0 && (
+        <div className="card card--flat" style={{ padding: '14px 16px' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            🧱 Слои материалов
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {materialLayers.map(l => (
+              <button
+                key={l.id}
+                onClick={() => handleLayerClick(l)}
+                style={{
+                  padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 500,
+                  border: `2px solid ${activeLayer?.id === l.id ? l.color : 'var(--surface-light)'}`,
+                  background: activeLayer?.id === l.id ? `${l.color}22` : 'var(--surface-dark)',
+                  color: activeLayer?.id === l.id ? '#fff' : 'var(--text-secondary)',
+                  cursor: 'pointer', transition: 'all 0.2s',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: l.color, flexShrink: 0 }} />
+                {l.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {layers.length === 0 && (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)', fontSize: 13 }}>
+          Данные о слоях отсутствуют
+        </div>
+      )}
     </div>
   )
 }
