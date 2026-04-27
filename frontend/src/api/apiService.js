@@ -1,7 +1,5 @@
 /**
  * API service for Facade Analyzer backend.
- * In dev mode, requests are proxied via Vite to localhost:9000.
- * In production, the React app is served by the same FastAPI server.
  */
 
 const API_BASE = '' // same origin — proxied in dev, served in prod
@@ -37,240 +35,354 @@ export function getImageUrl(analysisId, imageType) {
  * Format number as currency with thousands separator + ₽ (rubles)
  */
 export function formatCurrency(amount) {
-  return amount.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
+  if (amount == null || isNaN(amount)) return '0 ₽'
+  return Math.round(amount).toLocaleString('ru-RU') + ' ₽'
 }
 
 /**
- * Generate PDF report from analysis results
+ * Generate a clean, printable PDF report via browser print dialog.
+ * Uses native browser rendering — full Cyrillic support, clean professional style.
  */
-export async function generatePdfReport(result) {
-  const { jsPDF } = await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm')
+export function generatePdfReport(result) {
+  const re = result.repair_estimate || {}
+  const sum = re.summary || {}
+  const date = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
 
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-  const W = 210, M = 15
-  let y = M
+  const scoreColor = result.overall_score >= 80 ? '#4CAF50' : result.overall_score >= 60 ? '#FFC107' : '#F44336'
+  const sevColor = (s) => s === 'Высокая' ? '#F44336' : s === 'Средняя' ? '#FFC107' : '#4CAF50'
+  const condColor = (c) => c === 'Хорошее' ? '#4CAF50' : c === 'Удовлетворительное' ? '#FFC107' : '#F44336'
 
-  // Colors
-  const DARK = [15, 23, 36]
-  const ACCENT = [255, 109, 0]
-  const WHITE = [255, 255, 255]
-  const GRAY = [160, 170, 185]
-  const GREEN = [76, 175, 80]
-  const YELLOW = [255, 193, 7]
-  const RED = [244, 67, 54]
+  // Build damages rows
+  const damagesRows = (result.damages || []).map((d, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${d.type_display}</td>
+      <td style="color:${sevColor(d.severity_display)};font-weight:600">${d.severity_display}</td>
+      <td style="text-align:right;font-weight:600">${d.percentage}%</td>
+      <td>${d.description || ''}</td>
+    </tr>
+  `).join('')
 
-  const scoreClr = result.overall_score >= 80 ? GREEN : result.overall_score >= 60 ? YELLOW : RED
+  // Build materials rows
+  const materialsRows = (result.materials || []).map((m, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${m.name_display}</td>
+      <td style="text-align:right;font-weight:600">${m.percentage}%</td>
+      <td style="color:${condColor(m.condition)}">${m.condition}</td>
+    </tr>
+  `).join('')
 
-  // ── Page 1: Header & Summary ──
-  // Background
-  doc.setFillColor(...DARK)
-  doc.rect(0, 0, W, 297, 'F')
+  // Build cost items rows
+  const costRows = (re.costs_for_flutter || []).map((item, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${item.category}</td>
+      <td style="color:#666">${item.description}</td>
+      <td style="text-align:right;font-weight:600">${formatCurrency(item.cost)}</td>
+    </tr>
+  `).join('')
 
-  // Orange accent bar
-  doc.setFillColor(...ACCENT)
-  doc.rect(0, 0, W, 6, 'F')
+  // Build repair materials rows
+  const repairMatRows = (re.materials || []).map((m, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${m.name_display}</td>
+      <td style="text-align:center">${m.quantity} ${m.unit}</td>
+      <td style="text-align:right">${formatCurrency(m.price_per_unit)}</td>
+      <td style="text-align:right;font-weight:600">${formatCurrency(m.total_cost)}</td>
+    </tr>
+  `).join('')
 
-  // Title
-  y = 20
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(24)
-  doc.setTextColor(...WHITE)
-  doc.text('Отчёт по анализу фасада', M, y)
+  // Build labor rows
+  const laborRows = (re.labor || []).map((l, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${l.name_display}</td>
+      <td style="text-align:center">${l.quantity} ${l.unit}</td>
+      <td style="text-align:right">${formatCurrency(l.price_per_unit)}</td>
+      <td style="text-align:right;font-weight:600">${formatCurrency(l.total_cost)}</td>
+    </tr>
+  `).join('')
 
-  y += 10
-  doc.setFontSize(11)
-  doc.setTextColor(...GRAY)
-  doc.text(`Дата: ${new Date().toLocaleDateString('ru-RU')}`, M, y)
-  doc.text(`ID: ${result.id || '—'}`, W - M, y, { align: 'right' })
+  const html = `<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Отчёт — Анализ фасада</title>
+  <style>
+    @media print {
+      @page { margin: 15mm; size: A4; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .no-break { page-break-inside: avoid; }
+      .page-break { page-break-before: always; }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+      font-size: 11pt;
+      color: #1a1a1a;
+      line-height: 1.5;
+      background: #fff;
+    }
+    .header {
+      border-bottom: 3px solid #1a1a1a;
+      padding-bottom: 12px;
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+    .header h1 {
+      font-size: 22pt;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .header .meta {
+      text-align: right;
+      font-size: 9pt;
+      color: #666;
+    }
+    h2 {
+      font-size: 14pt;
+      font-weight: 700;
+      margin: 24px 0 10px;
+      padding-bottom: 4px;
+      border-bottom: 1.5px solid #ddd;
+    }
+    h2 .num {
+      display: inline-block;
+      width: 28px;
+      height: 28px;
+      line-height: 28px;
+      text-align: center;
+      background: #1a1a1a;
+      color: #fff;
+      border-radius: 4px;
+      font-size: 12pt;
+      margin-right: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0 16px;
+      font-size: 10pt;
+    }
+    th {
+      background: #f5f5f5;
+      font-weight: 600;
+      text-align: left;
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      font-size: 9pt;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      color: #555;
+    }
+    td {
+      padding: 7px 10px;
+      border: 1px solid #eee;
+      vertical-align: top;
+    }
+    tr:nth-child(even) { background: #fafafa; }
+    .summary-box {
+      background: #f8f8f8;
+      border: 1.5px solid #ddd;
+      border-radius: 6px;
+      padding: 16px 20px;
+      margin: 12px 0;
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+    .summary-item {
+      flex: 1;
+      min-width: 120px;
+    }
+    .summary-item .label {
+      font-size: 9pt;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .summary-item .value {
+      font-size: 18pt;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+    .total-row {
+      background: #1a1a1a !important;
+      color: #fff;
+    }
+    .total-row td {
+      border-color: #333;
+      font-weight: 700;
+      font-size: 12pt;
+      padding: 10px;
+    }
+    .score-badge {
+      display: inline-block;
+      padding: 4px 14px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 12pt;
+    }
+    .footer {
+      margin-top: 32px;
+      padding-top: 12px;
+      border-top: 1px solid #ddd;
+      font-size: 8pt;
+      color: #999;
+      display: flex;
+      justify-content: space-between;
+    }
+    .print-btn {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 12px 28px;
+      background: #1a1a1a;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      z-index: 100;
+    }
+    .print-btn:hover { background: #333; }
+    @media print { .print-btn { display: none; } }
+  </style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">📄 Сохранить PDF</button>
 
-  // Score circle area
-  y += 16
-  doc.setFillColor(20, 32, 50)
-  doc.roundedRect(M, y, W - 2 * M, 40, 4, 4, 'F')
+  <div class="header">
+    <div>
+      <h1>Отчёт по анализу фасада</h1>
+    </div>
+    <div class="meta">
+      Дата: ${date}<br>
+      ID: ${result.id || '—'}
+    </div>
+  </div>
 
-  // Score
-  doc.setFontSize(36)
-  doc.setFont('helvetica', 'bold')
-  doc.setTextColor(...scoreClr)
-  doc.text(String(Math.round(result.overall_score)), M + 20, y + 27, { align: 'center' })
+  <!-- Summary -->
+  <div class="summary-box no-break">
+    <div class="summary-item">
+      <div class="label">Оценка состояния</div>
+      <div class="value">
+        <span class="score-badge" style="background:${scoreColor}22;color:${scoreColor}">${Math.round(result.overall_score)} баллов</span>
+      </div>
+    </div>
+    <div class="summary-item">
+      <div class="label">Состояние</div>
+      <div class="value" style="font-size:14pt">${result.overall_condition || '—'}</div>
+    </div>
+    <div class="summary-item">
+      <div class="label">Площадь фасада</div>
+      <div class="value" style="font-size:14pt">${result.total_area_m2} м²</div>
+    </div>
+    <div class="summary-item">
+      <div class="label">Повреждено</div>
+      <div class="value" style="font-size:14pt;color:${scoreColor}">${result.damaged_area_m2} м² (${Math.round(result.damaged_area_m2 / result.total_area_m2 * 100)}%)</div>
+    </div>
+  </div>
 
-  doc.setFontSize(10)
-  doc.text('баллов', M + 20, y + 34, { align: 'center' })
+  <!-- 1. Damages -->
+  <h2 class="no-break"><span class="num">1</span>Обнаруженные дефекты</h2>
+  <table>
+    <thead>
+      <tr><th>№</th><th>Тип дефекта</th><th>Степень</th><th style="text-align:right">Доля</th><th>Описание</th></tr>
+    </thead>
+    <tbody>${damagesRows}</tbody>
+  </table>
 
-  // Condition & area
-  doc.setFontSize(14)
-  doc.setTextColor(...WHITE)
-  doc.text(result.overall_condition || '', M + 45, y + 16)
+  <!-- 2. Materials -->
+  <h2 class="no-break"><span class="num">2</span>Состав фасада</h2>
+  <table>
+    <thead>
+      <tr><th>№</th><th>Материал</th><th style="text-align:right">Доля</th><th>Состояние</th></tr>
+    </thead>
+    <tbody>${materialsRows}</tbody>
+  </table>
 
-  doc.setFontSize(11)
-  doc.setTextColor(...GRAY)
-  doc.text(`Площадь фасада: ${result.total_area_m2} м²`, M + 45, y + 24)
-  doc.text(`Повреждено: ${result.damaged_area_m2} м² (${Math.round(result.damaged_area_m2 / result.total_area_m2 * 100)}%)`, M + 45, y + 32)
+  <!-- 3. Cost Summary -->
+  <h2 class="page-break no-break"><span class="num">3</span>Смета ремонтных работ</h2>
+  <div class="summary-box no-break">
+    <div class="summary-item">
+      <div class="label">Срок работ</div>
+      <div class="value" style="font-size:14pt">~${sum.estimated_days || '—'} дней</div>
+    </div>
+    <div class="summary-item">
+      <div class="label">Нормо-часы</div>
+      <div class="value" style="font-size:14pt">${Math.round(sum.total_work_hours || 0)} ч</div>
+    </div>
+    <div class="summary-item">
+      <div class="label">Итоговая стоимость</div>
+      <div class="value">${formatCurrency(sum.grand_total || 0)}</div>
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr><th>№</th><th>Статья расходов</th><th>Описание</th><th style="text-align:right">Сумма</th></tr>
+    </thead>
+    <tbody>
+      ${costRows}
+      <tr class="total-row">
+        <td colspan="3">ИТОГО</td>
+        <td style="text-align:right">${formatCurrency(sum.grand_total || 0)}</td>
+      </tr>
+    </tbody>
+  </table>
 
-  // ── Damages section ──
-  y += 50
-  doc.setFillColor(...ACCENT)
-  doc.rect(M, y, 4, 8, 'F')
-  doc.setFontSize(16)
-  doc.setFont('helvetica', 'bold')
-  doc.setTextColor(...WHITE)
-  doc.text('Обнаруженные дефекты', M + 8, y + 7)
-  y += 14
+  <!-- 4. Materials Detail -->
+  <h2 class="no-break"><span class="num">4</span>Ведомость материалов</h2>
+  <table>
+    <thead>
+      <tr><th>№</th><th>Наименование</th><th style="text-align:center">Кол-во</th><th style="text-align:right">Цена за ед.</th><th style="text-align:right">Сумма</th></tr>
+    </thead>
+    <tbody>
+      ${repairMatRows}
+      <tr class="total-row">
+        <td colspan="4">Итого материалы</td>
+        <td style="text-align:right">${formatCurrency(sum.materials_total || 0)}</td>
+      </tr>
+    </tbody>
+  </table>
 
-  if (result.damages) {
-    result.damages.forEach((d, i) => {
-      if (y > 265) { doc.addPage(); doc.setFillColor(...DARK); doc.rect(0, 0, W, 297, 'F'); y = M }
-      doc.setFillColor(20, 32, 50)
-      doc.roundedRect(M, y, W - 2 * M, 18, 2, 2, 'F')
+  <!-- 5. Labor Detail -->
+  <h2 class="no-break"><span class="num">5</span>Ведомость работ</h2>
+  <table>
+    <thead>
+      <tr><th>№</th><th>Наименование</th><th style="text-align:center">Объём</th><th style="text-align:right">Цена за ед.</th><th style="text-align:right">Сумма</th></tr>
+    </thead>
+    <tbody>
+      ${laborRows}
+      <tr class="total-row">
+        <td colspan="4">Итого работы</td>
+        <td style="text-align:right">${formatCurrency(sum.labor_total || 0)}</td>
+      </tr>
+    </tbody>
+  </table>
 
-      doc.setFontSize(11)
-      doc.setFont('helvetica', 'bold')
-      doc.setTextColor(...WHITE)
-      doc.text(`${i + 1}. ${d.type_display}`, M + 4, y + 7)
+  <!-- Summary totals -->
+  <div class="summary-box no-break" style="margin-top:20px">
+    <div class="summary-item"><div class="label">Материалы</div><div class="value" style="font-size:12pt">${formatCurrency(sum.materials_total || 0)}</div></div>
+    <div class="summary-item"><div class="label">Работы</div><div class="value" style="font-size:12pt">${formatCurrency(sum.labor_total || 0)}</div></div>
+    <div class="summary-item"><div class="label">Леса</div><div class="value" style="font-size:12pt">${formatCurrency(sum.scaffolding_total || 0)}</div></div>
+    <div class="summary-item"><div class="label">НДС 20%</div><div class="value" style="font-size:12pt">${formatCurrency(sum.vat_amount || 0)}</div></div>
+    <div class="summary-item"><div class="label">ИТОГО</div><div class="value">${formatCurrency(sum.grand_total || 0)}</div></div>
+  </div>
 
-      const svClr = d.severity_display === 'Высокая' ? RED : d.severity_display === 'Средняя' ? YELLOW : GREEN
-      doc.setTextColor(...svClr)
-      doc.text(d.severity_display, W - M - 30, y + 7)
+  <div class="footer">
+    <span>Facade Analyzer v2.0 — автоматически сгенерированный отчёт</span>
+    <span>${date}</span>
+  </div>
+</body>
+</html>`
 
-      doc.setTextColor(...ACCENT)
-      doc.setFont('helvetica', 'bold')
-      doc.text(`${d.percentage}%`, W - M - 4, y + 7, { align: 'right' })
-
-      if (d.description) {
-        doc.setFontSize(9)
-        doc.setFont('helvetica', 'normal')
-        doc.setTextColor(...GRAY)
-        doc.text(d.description, M + 4, y + 14, { maxWidth: W - 2 * M - 8 })
-      }
-
-      y += 22
-    })
-  }
-
-  // ── Materials section ──
-  y += 4
-  if (y > 250) { doc.addPage(); doc.setFillColor(...DARK); doc.rect(0, 0, W, 297, 'F'); y = M }
-  doc.setFillColor(...ACCENT)
-  doc.rect(M, y, 4, 8, 'F')
-  doc.setFontSize(16)
-  doc.setFont('helvetica', 'bold')
-  doc.setTextColor(...WHITE)
-  doc.text('Состав фасада', M + 8, y + 7)
-  y += 14
-
-  if (result.materials) {
-    result.materials.forEach((m) => {
-      if (y > 270) { doc.addPage(); doc.setFillColor(...DARK); doc.rect(0, 0, W, 297, 'F'); y = M }
-      doc.setFontSize(11)
-      doc.setFont('helvetica', 'normal')
-      doc.setTextColor(...WHITE)
-      doc.text(`• ${m.name_display}`, M + 4, y + 5)
-      doc.setTextColor(...GRAY)
-      doc.text(`${m.percentage}% — ${m.condition}`, W - M - 4, y + 5, { align: 'right' })
-
-      // Progress bar
-      doc.setFillColor(30, 48, 68)
-      doc.roundedRect(M + 4, y + 8, W - 2 * M - 8, 3, 1, 1, 'F')
-      const condClr = m.condition === 'Хорошее' ? GREEN : m.condition === 'Удовлетворительное' ? YELLOW : RED
-      doc.setFillColor(...condClr)
-      doc.roundedRect(M + 4, y + 8, (W - 2 * M - 8) * m.percentage / 100, 3, 1, 1, 'F')
-
-      y += 16
-    })
-  }
-
-  // ── Page 2+: Cost Estimate ──
-  doc.addPage()
-  doc.setFillColor(...DARK)
-  doc.rect(0, 0, W, 297, 'F')
-  doc.setFillColor(...ACCENT)
-  doc.rect(0, 0, W, 6, 'F')
-
-  y = 20
-  doc.setFillColor(...ACCENT)
-  doc.rect(M, y, 4, 8, 'F')
-  doc.setFontSize(16)
-  doc.setFont('helvetica', 'bold')
-  doc.setTextColor(...WHITE)
-  doc.text('Смета ремонтных работ', M + 8, y + 7)
-  y += 16
-
-  const re = result.repair_estimate
-  if (re?.costs_for_flutter) {
-    // Table header
-    doc.setFillColor(20, 32, 50)
-    doc.roundedRect(M, y, W - 2 * M, 10, 2, 2, 'F')
-    doc.setFontSize(9)
-    doc.setFont('helvetica', 'bold')
-    doc.setTextColor(...ACCENT)
-    doc.text('№', M + 4, y + 7)
-    doc.text('Наименование', M + 14, y + 7)
-    doc.text('Стоимость', W - M - 4, y + 7, { align: 'right' })
-    y += 14
-
-    re.costs_for_flutter.forEach((item, i) => {
-      if (y > 270) { doc.addPage(); doc.setFillColor(...DARK); doc.rect(0, 0, W, 297, 'F'); y = M }
-      const bg = i % 2 === 0 ? [18, 28, 42] : [22, 34, 50]
-      doc.setFillColor(...bg)
-      doc.rect(M, y, W - 2 * M, 14, 'F')
-
-      doc.setFontSize(10)
-      doc.setFont('helvetica', 'normal')
-      doc.setTextColor(...GRAY)
-      doc.text(String(i + 1), M + 4, y + 6)
-
-      doc.setTextColor(...WHITE)
-      doc.text(item.category, M + 14, y + 6, { maxWidth: 100 })
-      doc.setFontSize(8)
-      doc.setTextColor(...GRAY)
-      doc.text(item.description, M + 14, y + 12, { maxWidth: 100 })
-
-      doc.setFontSize(11)
-      doc.setFont('helvetica', 'bold')
-      doc.setTextColor(...WHITE)
-      doc.text(formatCurrency(item.cost), W - M - 4, y + 8, { align: 'right' })
-
-      y += 16
-    })
-
-    // Grand total
-    y += 4
-    const sum = re.summary || {}
-    doc.setFillColor(...ACCENT)
-    doc.roundedRect(M, y, W - 2 * M, 16, 3, 3, 'F')
-    doc.setFontSize(14)
-    doc.setFont('helvetica', 'bold')
-    doc.setTextColor(...WHITE)
-    doc.text('ИТОГО:', M + 8, y + 11)
-    doc.setFontSize(16)
-    doc.text(formatCurrency(sum.grand_total || 0), W - M - 8, y + 11, { align: 'right' })
-
-    y += 24
-    // Summary details
-    doc.setFontSize(10)
-    doc.setFont('helvetica', 'normal')
-    doc.setTextColor(...GRAY)
-    doc.text(`Материалы: ${formatCurrency(sum.materials_total || 0)}`, M, y)
-    doc.text(`Работы: ${formatCurrency(sum.labor_total || 0)}`, M + 70, y)
-    y += 6
-    doc.text(`Леса: ${formatCurrency(sum.scaffolding_total || 0)}`, M, y)
-    doc.text(`НДС (20%): ${formatCurrency(sum.vat_amount || 0)}`, M + 70, y)
-    y += 6
-    doc.text(`Срок работ: ~${sum.estimated_days || '—'} дней (${Math.round(sum.total_work_hours || 0)} нормо-часов)`, M, y)
-  }
-
-  // Footer
-  const addFooter = (pageNum) => {
-    doc.setPage(pageNum)
-    doc.setFontSize(8)
-    doc.setTextColor(...GRAY)
-    doc.text('Facade Analyzer v2.0 — автоматический отчёт', M, 290)
-    doc.text(`Стр. ${pageNum}`, W - M, 290, { align: 'right' })
-  }
-  for (let p = 1; p <= doc.getNumberOfPages(); p++) addFooter(p)
-
-  // Save
-  const filename = `facade_report_${result.id || 'analysis'}_${new Date().toISOString().slice(0, 10)}.pdf`
-  doc.save(filename)
-  return filename
+  const printWindow = window.open('', '_blank')
+  printWindow.document.write(html)
+  printWindow.document.close()
 }

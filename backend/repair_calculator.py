@@ -232,9 +232,14 @@ class RepairCalculator:
                     norm_hours_per_unit=l_hours,
                 ))
 
-        # Apply surplus to materials
+        # Apply surplus to materials and round countable units up
+        COUNTABLE_UNITS = {"шт", "комп"}
         for mat in materials_agg.values():
-            mat.quantity = round(mat.quantity * (1 + MATERIAL_SURPLUS), 2)
+            mat.quantity = mat.quantity * (1 + MATERIAL_SURPLUS)
+            if mat.unit in COUNTABLE_UNITS:
+                mat.quantity = math.ceil(mat.quantity)
+            else:
+                mat.quantity = round(mat.quantity, 2)
 
         # Scaffolding
         floors = estimate_floors(self.total_area_m2)
