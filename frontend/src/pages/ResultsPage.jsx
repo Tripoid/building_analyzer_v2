@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { formatCurrency, getImageUrl } from '../api/apiService'
+import { formatCurrency, getImageUrl, generatePdfReport } from '../api/apiService'
 import StatCard from '../components/StatCard'
 import DamageChart, { CHART_COLORS } from '../components/DamageChart'
 import CostBreakdownCard from '../components/CostBreakdownCard'
@@ -22,6 +22,7 @@ export default function ResultsPage() {
   const navigate = useNavigate()
   const [tab, setTab] = useState(0)
   const [imgIdx, setImgIdx] = useState(0)
+  const [pdfLoading, setPdfLoading] = useState(false)
 
   const result = useMemo(() => {
     try { return JSON.parse(sessionStorage.getItem('analysisResult')) } catch { return null }
@@ -37,9 +38,19 @@ export default function ResultsPage() {
   )
 
   const sc = scoreColor(result.overall_score)
-  const re = result.repair_estimate
-  const sum = re?.summary || {}
   const circumference = 2 * Math.PI * 42
+
+  const handlePdf = async () => {
+    setPdfLoading(true)
+    try {
+      await generatePdfReport(result)
+    } catch (e) {
+      console.error('PDF generation failed:', e)
+      alert('Ошибка генерации PDF: ' + e.message)
+    } finally {
+      setPdfLoading(false)
+    }
+  }
 
   return (
     <div className="page fade-in">
@@ -50,11 +61,19 @@ export default function ResultsPage() {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-primary)" strokeWidth="2"><polyline points="15,18 9,12 15,6"/></svg>
           </button>
           <div style={{ display:'flex',gap:8 }}>
-            <button className="btn--icon" style={{ padding:8,borderRadius:10,background:'rgba(30,48,68,0.6)',border:'1px solid rgba(42,69,96,0.3)',cursor:'pointer',display:'flex' }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-primary)" strokeWidth="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16,6 12,2 8,6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
-            </button>
-            <button className="btn--icon" style={{ padding:8,borderRadius:10,background:'rgba(30,48,68,0.6)',border:'1px solid rgba(42,69,96,0.3)',cursor:'pointer',display:'flex' }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-primary)" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <button
+              className="btn--icon"
+              id="pdf-btn"
+              onClick={handlePdf}
+              disabled={pdfLoading}
+              title="Скачать PDF-отчёт"
+              style={{ padding:8,borderRadius:10,background: pdfLoading ? 'rgba(255,109,0,0.3)' : 'rgba(30,48,68,0.6)',border:'1px solid rgba(42,69,96,0.3)',cursor: pdfLoading ? 'wait' : 'pointer',display:'flex' }}
+            >
+              {pdfLoading ? (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" className="spin"><circle cx="12" cy="12" r="10" strokeDasharray="30 60"/></svg>
+              ) : (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10,9 9,9 8,9"/></svg>
+              )}
             </button>
           </div>
         </div>
@@ -95,41 +114,80 @@ export default function ResultsPage() {
 }
 
 function ImagesTab({ result, imgIdx, setImgIdx }) {
-  const isDemo = !result.id || result.id.startsWith('mock')
+  const [imgLoaded, setImgLoaded] = useState(false)
+  const [imgError, setImgError] = useState(false)
+
+  const handleImgChange = (i) => {
+    setImgIdx(i)
+    setImgLoaded(false)
+    setImgError(false)
+  }
+
   return (
     <div className="slide-up">
-      <div style={{ borderRadius:20,overflow:'hidden',border:'1px solid rgba(42,69,96,0.3)',marginBottom:12,position:'relative',height:260,background:'var(--surface-card)' }}>
-        {isDemo ? (
-          <div style={{ display:'flex',alignItems:'center',justifyContent:'center',height:'100%',flexDirection:'column',gap:8 }}>
-            <span style={{ fontSize:48 }}>{['🔥','🔍','🧱','🔧'][imgIdx]}</span>
-            <div style={{ fontWeight:600 }}>{IMAGE_META[imgIdx].title}</div>
-            <div style={{ fontSize:12,color:'var(--text-secondary)' }}>{IMAGE_META[imgIdx].desc}</div>
-            <div className="badge badge--info" style={{ marginTop:4 }}>Демо-режим</div>
+      <div style={{ borderRadius:20,overflow:'hidden',border:'1px solid rgba(42,69,96,0.3)',marginBottom:12,position:'relative',background:'var(--surface-card)' }}>
+        {imgError ? (
+          <div style={{ display:'flex',alignItems:'center',justifyContent:'center',minHeight:200,flexDirection:'column',gap:8,padding:20 }}>
+            <span style={{ fontSize:48 }}>📷</span>
+            <div style={{ fontWeight:600 }}>Изображение недоступно</div>
+            <div style={{ fontSize:12,color:'var(--text-secondary)' }}>{IMAGE_META[imgIdx].title}</div>
           </div>
         ) : (
-          <img src={getImageUrl(result.id, IMAGE_META[imgIdx].type)} alt={IMAGE_META[imgIdx].title} style={{ width:'100%',height:'100%',objectFit:'cover' }}/>
+          <>
+            {!imgLoaded && (
+              <div style={{ display:'flex',alignItems:'center',justifyContent:'center',minHeight:200 }}>
+                <div className="pulse-ring" style={{ transform:'scale(0.5)' }}>
+                  <div className="pulse-ring__outer" />
+                  <div className="pulse-ring__middle" />
+                  <div className="pulse-ring__inner"><span>⏳</span></div>
+                </div>
+              </div>
+            )}
+            <img
+              src={getImageUrl(result.id, IMAGE_META[imgIdx].type)}
+              alt={IMAGE_META[imgIdx].title}
+              onLoad={() => setImgLoaded(true)}
+              onError={() => setImgError(true)}
+              style={{
+                width:'100%',
+                height:'auto',
+                maxHeight:'60vh',
+                objectFit:'contain',
+                display: imgLoaded ? 'block' : 'none',
+              }}
+            />
+          </>
         )}
+        {/* Image title overlay */}
+        <div style={{
+          position:'absolute',bottom:0,left:0,right:0,
+          padding:'12px 16px',
+          background:'linear-gradient(transparent, rgba(0,0,0,0.7))',
+        }}>
+          <div style={{ fontSize:13,fontWeight:600,color:'#fff' }}>{IMAGE_META[imgIdx].title}</div>
+          <div style={{ fontSize:11,color:'rgba(255,255,255,0.7)' }}>{IMAGE_META[imgIdx].desc}</div>
+        </div>
       </div>
       <div style={{ display:'flex',justifyContent:'center',gap:6,marginBottom:24 }}>
-        {IMAGE_META.map((_,i) => <div key={i} onClick={() => setImgIdx(i)} style={{ width:i===imgIdx?24:8,height:8,borderRadius:4,background:i===imgIdx?'var(--accent)':'var(--surface-light)',cursor:'pointer',transition:'all 0.3s' }}/>)}
+        {IMAGE_META.map((_,i) => <div key={i} onClick={() => handleImgChange(i)} style={{ width:i===imgIdx?24:8,height:8,borderRadius:4,background:i===imgIdx?'var(--accent)':'var(--surface-light)',cursor:'pointer',transition:'all 0.3s' }}/>)}
       </div>
       <div className="stats-grid">
         <StatCard icon="🖼️" value={String(IMAGE_META.length)} label={'Обработанных\nснимков'} color="var(--info)"/>
-        <StatCard icon="🐛" value={String(result.damages.length)} label={'Типов\nдефектов'} color="var(--danger)"/>
+        <StatCard icon="🐛" value={String(result.damages?.length || 0)} label={'Типов\nдефектов'} color="var(--danger)"/>
         <StatCard icon="📐" value={`${result.total_area_m2} м²`} label={'Общая\nплощадь'} color="var(--success)"/>
-        <StatCard icon="⚠️" value={`${Math.round(result.damaged_area_m2/result.total_area_m2*100)}%`} label={'Площадь\nповреждений'} color="var(--warning)"/>
+        <StatCard icon="⚠️" value={`${Math.round((result.damaged_area_m2 || 0)/(result.total_area_m2 || 1)*100)}%`} label={'Площадь\nповреждений'} color="var(--warning)"/>
       </div>
     </div>
   )
 }
 
 function DamageTab({ result }) {
-  const chartData = result.damages.map(d => ({ label: d.type_display, value: d.percentage }))
+  const chartData = (result.damages || []).map(d => ({ label: d.type_display, value: d.percentage }))
   return (
     <div className="slide-up">
       <DamageChart data={chartData} size={200}/>
       <div style={{ marginTop:24,display:'flex',flexDirection:'column',gap:12 }}>
-        {result.damages.map((d,i) => {
+        {(result.damages || []).map((d,i) => {
           const color = CHART_COLORS[i % CHART_COLORS.length]
           const svc = sevColor(d.severity_display)
           return (
@@ -162,7 +220,7 @@ function MaterialsTab({ result }) {
     <div className="slide-up">
       <div className="card card--flat" style={{ marginBottom:16 }}>
         <div style={{ display:'flex',alignItems:'center',gap:10,marginBottom:16 }}><span style={{ fontSize:20 }}>🧱</span><span style={{ fontSize:16,fontWeight:700 }}>Состав фасада</span></div>
-        {result.materials.map((m,i) => {
+        {(result.materials || []).map((m,i) => {
           const bc = condColor(m.condition)
           return (
             <div key={i} style={{ marginBottom:12 }}>
@@ -175,7 +233,7 @@ function MaterialsTab({ result }) {
           )
         })}
       </div>
-      {result.materials.map((m,i) => {
+      {(result.materials || []).map((m,i) => {
         const cc = condColor(m.condition)
         return (
           <div key={i} className="card card--flat" style={{ marginBottom:10,display:'flex',alignItems:'center',gap:14,borderColor:`${cc}26` }}>
@@ -199,11 +257,11 @@ function CostTab({ result }) {
   return (
     <div className="slide-up">
       <div className="stats-grid" style={{ marginBottom:16 }}>
-        <StatCard icon="⏱️" value={String(sum.estimated_days||17)} label={'Дней\nработы'} color="var(--info)"/>
-        <StatCard icon="👷" value={String(Math.round(sum.total_work_hours||135))} label={'Нормо-\nчасов'} color="var(--warning)"/>
+        <StatCard icon="⏱️" value={String(sum.estimated_days||'—')} label={'Дней\nработы'} color="var(--info)"/>
+        <StatCard icon="👷" value={String(Math.round(sum.total_work_hours||0))} label={'Нормо-\nчасов'} color="var(--warning)"/>
       </div>
       <div className="alert alert--warning" style={{ marginBottom:16 }}>
-        <span>ℹ️</span><span>Расчёт является предварительным и основан на средних рыночных ценах в регионе</span>
+        <span>ℹ️</span><span>Расчёт является предварительным и основан на средних рыночных ценах</span>
       </div>
       <CostBreakdownCard items={re?.costs_for_flutter || []}/>
     </div>
@@ -241,7 +299,7 @@ function RepairTab({ result }) {
         <div className="summary-row"><span>Материалы</span><span className="summary-row__amount">{formatCurrency(sum.materials_total||0)}</span></div>
         <div className="summary-row"><span>Работы</span><span className="summary-row__amount">{formatCurrency(sum.labor_total||0)}</span></div>
         <div className="summary-row"><span>Леса</span><span className="summary-row__amount">{formatCurrency(sum.scaffolding_total||0)}</span></div>
-        <div className="summary-row"><span>НДС 12%</span><span className="summary-row__amount">{formatCurrency(sum.vat_amount||0)}</span></div>
+        <div className="summary-row"><span>НДС 20%</span><span className="summary-row__amount">{formatCurrency(sum.vat_amount||0)}</span></div>
         <div className="divider"/>
         <div className="summary-row summary-row--total"><span>Итого</span><span className="summary-row__amount">{formatCurrency(sum.grand_total||0)}</span></div>
       </div>

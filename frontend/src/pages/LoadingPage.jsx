@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { analyzeImage, getMockResult } from '../api/apiService'
+import { analyzeImage } from '../api/apiService'
 
 const STEPS = [
   { label: 'Загрузка изображения...', icon: '☁️' },
@@ -20,31 +20,37 @@ export default function LoadingPage() {
   useEffect(() => {
     if (started.current) return
     started.current = true
-    const isDemo = sessionStorage.getItem('demoMode') === 'true'
-
-    if (isDemo) {
-      let c = 0
-      const t = setInterval(() => {
-        c++
-        if (c < STEPS.length) setStep(c)
-        else {
-          clearInterval(t)
-          sessionStorage.setItem('analysisResult', JSON.stringify(getMockResult()))
-          setTimeout(() => navigate('/results', { replace: true }), 400)
-        }
-      }, 500)
-      return () => clearInterval(t)
-    }
 
     const file = window.__uploadedFile
-    if (!file) { setError('Файл не найден.'); return }
+    if (!file) {
+      setError('Файл не найден. Вернитесь на страницу загрузки.')
+      return
+    }
+
     const area = parseFloat(sessionStorage.getItem('totalArea') || '450')
+
+    // Progress animation during analysis
     let c = 0
-    const t = setInterval(() => { c++; if (c < STEPS.length - 1) setStep(c); else clearInterval(t) }, 3000)
+    const t = setInterval(() => {
+      c++
+      if (c < STEPS.length - 1) setStep(c)
+      else clearInterval(t)
+    }, 3000)
 
     analyzeImage(file, area)
-      .then((r) => { clearInterval(t); setStep(STEPS.length - 1); sessionStorage.setItem('analysisResult', JSON.stringify(r)); window.__uploadedFile = null; setTimeout(() => navigate('/results', { replace: true }), 400) })
-      .catch((e) => { clearInterval(t); window.__uploadedFile = null; setError(e.message) })
+      .then((r) => {
+        clearInterval(t)
+        setStep(STEPS.length - 1)
+        sessionStorage.setItem('analysisResult', JSON.stringify(r))
+        window.__uploadedFile = null
+        setTimeout(() => navigate('/results', { replace: true }), 400)
+      })
+      .catch((e) => {
+        clearInterval(t)
+        window.__uploadedFile = null
+        setError(e.message)
+      })
+
     return () => clearInterval(t)
   }, [navigate])
 

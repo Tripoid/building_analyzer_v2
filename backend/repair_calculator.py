@@ -1,6 +1,7 @@
 """
 RepairCalculator — Calculates repair materials, labor, and cost estimates
 based on detected defects and multi-layer wall structure.
+Prices in RUB (Russian Rubles).
 """
 
 from typing import Dict, List, Any
@@ -9,7 +10,7 @@ import math
 
 
 # ═══════════════════════════════════════════════════════
-# MATERIAL DATABASE (prices in KZT — Kazakhstani Tenge)
+# MATERIAL DATABASE (prices in RUB — Russian Rubles)
 # ═══════════════════════════════════════════════════════
 
 @dataclass
@@ -17,7 +18,7 @@ class RepairMaterial:
     name: str
     name_display: str
     unit: str  # кг, л, м², шт, м.п.
-    price_per_unit: float  # KZT
+    price_per_unit: float  # RUB
     quantity: float = 0.0
 
     @property
@@ -30,7 +31,7 @@ class RepairWork:
     name: str
     name_display: str
     unit: str  # м², м.п., шт
-    price_per_unit: float  # KZT per unit (labor cost)
+    price_per_unit: float  # RUB per unit (labor cost)
     quantity: float = 0.0
     norm_hours_per_unit: float = 0.0  # hours per unit
 
@@ -139,11 +140,11 @@ LABOR_RATES = {
 }
 
 # Scaffolding cost per floor
-SCAFFOLDING_COST_PER_FLOOR = 85000  # KZT per floor for full facade access
+SCAFFOLDING_COST_PER_FLOOR = 85000  # RUB per floor for full facade access
 SCAFFOLDING_SETUP_HOURS = 8  # per floor
 
 # Tax
-VAT_RATE = 0.12  # 12% НДС in Kazakhstan
+VAT_RATE = 0.20  # 20% НДС in Russia
 MATERIAL_SURPLUS = 0.10  # 10% запас материалов
 
 
@@ -287,7 +288,7 @@ class RepairCalculator:
                 "grand_total": round(grand_total, 0),
                 "total_work_hours": round(total_hours, 1),
                 "estimated_days": max(1, int(math.ceil(total_hours / 8))),
-                "currency": "₸",
+                "currency": "₽",
             },
             "costs_for_flutter": _build_flutter_costs(materials_agg, labor_items, scaffolding_cost, vat),
         }
@@ -309,7 +310,7 @@ def _build_flutter_costs(
             "category": "Строительные материалы",
             "description": f"{len(materials)} наименований с учётом запаса 10%",
             "cost": round(mat_total, 0),
-            "unit": "₸",
+            "unit": "₽",
         })
 
     # Individual labor items
@@ -319,7 +320,7 @@ def _build_flutter_costs(
                 "category": l.name_display,
                 "description": f"{l.quantity} {l.unit}",
                 "cost": round(l.total_cost, 0),
-                "unit": "₸",
+                "unit": "₽",
             })
 
     # Scaffolding
@@ -328,16 +329,16 @@ def _build_flutter_costs(
             "category": "Леса и оборудование",
             "description": "Монтаж/демонтаж строительных лесов",
             "cost": round(scaffolding, 0),
-            "unit": "₸",
+            "unit": "₽",
         })
 
     # VAT
     if vat > 0:
         items.append({
-            "category": "НДС (12%)",
+            "category": "НДС (20%)",
             "description": "Налог на добавленную стоимость",
             "cost": round(vat, 0),
-            "unit": "₸",
+            "unit": "₽",
         })
 
     return items

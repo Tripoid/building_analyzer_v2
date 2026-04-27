@@ -1,17 +1,5 @@
 import { useNavigate } from 'react-router-dom'
 
-const RECENT = [
-  { address: 'ул. Абая, 45', date: '22 марта 2026', score: 72, status: 'Удовлетворительное' },
-  { address: 'пр. Республики, 12', date: '20 марта 2026', score: 45, status: 'Требует ремонта' },
-  { address: 'ул. Тулебаева, 88', date: '18 марта 2026', score: 91, status: 'Хорошее' },
-]
-
-function scoreColor(score) {
-  if (score >= 80) return 'var(--success)'
-  if (score >= 60) return 'var(--warning)'
-  return 'var(--danger)'
-}
-
 export default function HomePage() {
   const navigate = useNavigate()
 
@@ -52,9 +40,8 @@ export default function HomePage() {
           </p>
         </div>
 
-        {/* Action Cards */}
+        {/* Upload photo card */}
         <div className="fade-in" style={{ padding: '24px 24px 8px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {/* Upload photo card */}
           <div
             className="card card--accent"
             id="upload-card"
@@ -76,74 +63,37 @@ export default function HomePage() {
               </svg>
             </div>
           </div>
-
-          {/* Demo mode card */}
-          <div
-            className="card"
-            id="demo-card"
-            onClick={() => {
-              sessionStorage.setItem('demoMode', 'true')
-              navigate('/loading')
-            }}
-            style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 16 }}
-          >
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10"/><polygon points="10,8 16,12 10,16"/>
-            </svg>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 17, fontWeight: 700 }}>Демо-режим</div>
-              <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.3, marginTop: 4 }}>
-                Посмотрите пример отчёта<br/>с тестовыми данными
-              </div>
-            </div>
-            <div style={{ padding: 12, borderRadius: 14, background: 'rgba(255,109,0,0.15)', display: 'flex' }}>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/>
-              </svg>
-            </div>
-          </div>
         </div>
 
-        {/* Recent Analyses */}
+        {/* Features */}
         <div className="slide-up" style={{ padding: '24px 24px 32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 18, fontWeight: 700 }}>Недавние анализы</span>
-            <span style={{ fontSize: 14, color: 'var(--accent)', fontWeight: 600, cursor: 'pointer' }}>Все →</span>
-          </div>
-
-          {RECENT.map((item, i) => {
-            const color = scoreColor(item.score)
-            return (
+          <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>Возможности</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {[
+              { icon: '🔍', title: 'Обнаружение дефектов', desc: 'Трещины, отслоения, высолы, биопоражение' },
+              { icon: '🧱', title: 'Анализ материалов', desc: 'Определение состава и состояния материалов фасада' },
+              { icon: '📊', title: 'Оценка состояния', desc: 'Балльная оценка с визуализацией на тепловой карте' },
+              { icon: '🧮', title: 'Смета ремонта', desc: 'Автоматический расчёт стоимости в рублях' },
+              { icon: '📄', title: 'PDF-отчёт', desc: 'Выгрузка красивого отчёта для заказчика' },
+            ].map((f, i) => (
               <div key={i} style={{
-                marginBottom: 10, padding: 14, borderRadius: 14,
+                padding: 14, borderRadius: 14,
                 background: 'rgba(30,48,68,0.7)', border: '1px solid rgba(42,69,96,0.2)',
                 display: 'flex', alignItems: 'center', gap: 14,
               }}>
                 <div style={{
-                  width: 48, height: 48, borderRadius: 12,
-                  background: `color-mix(in srgb, ${color} 15%, transparent)`,
+                  width: 44, height: 44, borderRadius: 12,
+                  background: 'rgba(255,109,0,0.1)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/>
-                  </svg>
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{item.address}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-                    {item.date} • {item.status}
-                  </div>
-                </div>
-                <div style={{
-                  padding: '6px 10px', borderRadius: 8,
-                  background: `color-mix(in srgb, ${color} 15%, transparent)`,
-                  fontSize: 14, fontWeight: 700, color,
-                }}>
-                  {item.score}%
+                  fontSize: 22, flexShrink: 0,
+                }}>{f.icon}</div>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{f.title}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>{f.desc}</div>
                 </div>
               </div>
-            )
-          })}
+            ))}
+          </div>
         </div>
       </div>
     </div>
