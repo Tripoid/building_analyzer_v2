@@ -1,0 +1,19 @@
+[Unit]
+Description=Facade Analyzer API Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/facade-analyzer/backend
+Environment=PATH=/opt/facade-analyzer/backend/venv/bin:/usr/bin:/bin
+Environment=HOST=0.0.0.0
+Environment=PORT=9000
+ExecStart=/opt/facade-analyzer/backend/venv/bin/python -m uvicorn server:app --host 0.0.0.0 --port 9000 --workers 1
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
