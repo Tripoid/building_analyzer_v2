@@ -175,6 +175,49 @@ CONDITION_LABELS = {
     }
 }
 
+# Russian display names for defect types
+DEFECT_DISPLAY_RU = {
+    "crack": "Трещины",
+    "peeling": "Отслоение штукатурки",
+    "exposed_brick": "Оголённая кладка",
+    "water_damage": "Следы протечек",
+    "rust": "Коррозия",
+    "moss": "Биопоражение",
+    "efflorescence": "Высолы",
+    "spalling": "Разрушение бетона",
+    "broken_glass": "Повреждённое остекление",
+    "damaged_wood": "Повреждённое дерево",
+    "rusty_metal": "Ржавый металл",
+    "damaged_railing": "Повреждённые ограждения",
+}
+
+# Russian display names for materials
+MATERIAL_DISPLAY_RU = {
+    "concrete": "Бетон",
+    "brick": "Кирпичная кладка",
+    "cement_plaster": "Цементная штукатурка",
+    "decorative_plaster": "Декоративная штукатурка",
+    "molding": "Лепнина / карнизы",
+    "ceramic_tile": "Керамическая плитка",
+    "painted_surface": "Окрашенная поверхность",
+}
+
+# Russian descriptions for defect types
+DEFECT_DESCRIPTION_RU = {
+    "crack": "Линейные повреждения поверхности различной глубины",
+    "peeling": "Отслоение и разрушение штукатурного слоя",
+    "exposed_brick": "Участки с полностью утраченным штукатурным покрытием",
+    "water_damage": "Потёки, разводы и пятна от воздействия влаги",
+    "rust": "Ржавчина и коррозионные пятна на поверхности",
+    "moss": "Мох, лишайник и другие биологические отложения",
+    "efflorescence": "Белые солевые отложения на поверхности",
+    "spalling": "Разрушение и отколы бетонного покрытия",
+    "broken_glass": "Разбитые или повреждённые стеклопакеты",
+    "damaged_wood": "Гниль, трещины и разрушение деревянных элементов",
+    "rusty_metal": "Коррозия металлических элементов фасада",
+    "damaged_railing": "Деформация или разрушение балконных ограждений",
+}
+
 
 def _get_base_class(raw_label: str, class_map: dict) -> Optional[str]:
     """Match a raw label to a base class using synonym lookup."""
@@ -736,11 +779,12 @@ class FacadeAnalyzer:
 
             damages.append({
                 "type": dtype,
-                "type_display": dtype.replace("_", " ").title(),
+                "type_display": DEFECT_DISPLAY_RU.get(dtype, dtype.replace("_", " ").title()),
                 "percentage": round(pct, 1),
                 "area_px": area_px,
                 "severity": severity,
                 "severity_display": SEVERITY_LABELS["ru"][severity],
+                "description": DEFECT_DESCRIPTION_RU.get(dtype, ""),
                 "affected_layers": layer_info.get("affected_layers", ["finish"]),
                 "crack_depth": layer_info.get("crack_depth"),
             })
@@ -755,11 +799,25 @@ class FacadeAnalyzer:
             if area_px == 0:
                 continue
             pct = (area_px / bare_wall_px * 100) if bare_wall_px > 0 else 0
+            # Determine material condition based on defect overlap
+            defect_on_mat = 0
+            for d_mask in all_defect_masks.values():
+                if np.any(d_mask):
+                    defect_on_mat += int((mask & d_mask).sum())
+            defect_ratio = defect_on_mat / area_px if area_px > 0 else 0
+            if defect_ratio < 0.05:
+                mat_condition = "Хорошее"
+            elif defect_ratio < 0.20:
+                mat_condition = "Удовлетворительное"
+            else:
+                mat_condition = "Требует ремонта"
+
             materials.append({
                 "name": mat_name,
-                "name_display": mat_name.replace("_", " ").title(),
+                "name_display": MATERIAL_DISPLAY_RU.get(mat_name, mat_name.replace("_", " ").title()),
                 "percentage": round(pct, 1),
                 "area_px": area_px,
+                "condition": mat_condition,
             })
         materials.sort(key=lambda m: m["percentage"], reverse=True)
 
