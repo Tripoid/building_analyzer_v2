@@ -21,7 +21,8 @@ echo "App port:    $APP_PORT (external: 44025)"
 echo ""
 echo "▶ [1/5] Installing system dependencies..."
 apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv python3-dev curl wget
+apt-get install -y -qq python3 python3-pip python3-venv python3-dev curl wget \
+    libxcb1 libxcb-shm0 libxcb-xfixes0 libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender1
 
 # Install Node.js (LTS) if missing
 if ! command -v node &> /dev/null; then
