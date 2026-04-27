@@ -10,12 +10,12 @@ export async function healthCheck() {
   return res.json()
 }
 
-export async function analyzeImage(file, totalAreaM2 = 450.0) {
+export async function analyzeImage(file, facadeWidth = 20.0, facadeHeight = 12.0) {
   const formData = new FormData()
   formData.append('file', file)
 
   const res = await fetch(
-    `${API_BASE}/api/analyze?total_area_m2=${totalAreaM2}`,
+    `${API_BASE}/api/analyze?facade_width=${facadeWidth}&facade_height=${facadeHeight}`,
     { method: 'POST', body: formData }
   )
 

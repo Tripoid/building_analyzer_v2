@@ -620,6 +620,47 @@ class FacadeAnalyzer:
         cv2.imwrite(path, cv2.cvtColor(repair_canvas, cv2.COLOR_RGB2BGR))
         paths["overlay"] = path
 
+        # 5. Restoration — inpaint defect areas to show "repaired" facade
+        logger.info("Generating restoration visualization...")
+        all_defect_mask = np.zeros(original_size, dtype=np.uint8)
+        for mask in wall_defect_masks.values():
+            if np.any(mask):
+                all_defect_mask |= mask.astype(np.uint8)
+        for mask in element_defect_masks.values():
+            if np.any(mask):
+                all_defect_mask |= mask.astype(np.uint8)
+
+        if np.any(all_defect_mask):
+            # Dilate mask slightly for better inpainting
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            inpaint_mask = cv2.dilate(all_defect_mask * 255, kernel, iterations=2)
+
+            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+
+            # Two-pass inpainting: TELEA for structure + NS for texture blend
+            restored_telea = cv2.inpaint(img_bgr, inpaint_mask, 5, cv2.INPAINT_TELEA)
+            restored_ns = cv2.inpaint(img_bgr, inpaint_mask, 5, cv2.INPAINT_NS)
+
+            # Blend both methods for best quality
+            restored = cv2.addWeighted(restored_telea, 0.5, restored_ns, 0.5, 0)
+
+            # Smooth the seams: Gaussian blur on borders only
+            border_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+            border_mask = cv2.dilate(inpaint_mask, border_kernel, iterations=1) - cv2.erode(inpaint_mask, border_kernel, iterations=1)
+            border_mask = np.clip(border_mask, 0, 255).astype(np.uint8)
+            border_float = border_mask.astype(np.float32) / 255.0
+
+            blurred = cv2.GaussianBlur(restored, (9, 9), 0)
+            border_3ch = np.stack([border_float] * 3, axis=-1)
+            restored = (restored.astype(np.float32) * (1 - border_3ch) +
+                       blurred.astype(np.float32) * border_3ch).astype(np.uint8)
+        else:
+            restored = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+
+        path = os.path.join(output_dir, "restoration.jpg")
+        cv2.imwrite(path, restored)
+        paths["restoration"] = path
+
         return paths
 
     # ─────────────────────────────────────────────────

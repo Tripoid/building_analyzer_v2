@@ -11,6 +11,7 @@ const IMAGE_META = [
   { type: 'defects', title: 'Выделенные дефекты', desc: 'Обнаружение и маркировка дефектов' },
   { type: 'segments', title: 'Сегментация материалов', desc: 'Разбивка по типам материалов' },
   { type: 'overlay', title: 'Зоны ремонта', desc: 'Области для первоочередного ремонта' },
+  { type: 'restoration', title: 'Реставрация фасада', desc: 'Визуализация восстановленного фасада' },
 ]
 const TABS = ['Снимки', 'Дефекты', 'Материалы', 'Смета', 'Ведомость']
 
@@ -90,7 +91,13 @@ export default function ResultsPage() {
           </div>
           <div>
             <span className="badge" style={{ background:`color-mix(in srgb, ${sc} 15%, transparent)`,color:sc }}>{result.overall_condition}</span>
-            <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:10 }}>Площадь: {result.total_area_m2} м²</div>
+            <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:10 }}>
+              {result.facade_width && result.facade_height
+                ? `Размеры: ${result.facade_width} × ${result.facade_height} м`
+                : `Площадь: ${result.total_area_m2} м²`
+              }
+            </div>
+            <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:4 }}>Площадь: {result.total_area_m2} м²</div>
             <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:4 }}>Повреждено: {result.damaged_area_m2} м² ({Math.round(result.damaged_area_m2/result.total_area_m2*100)}%)</div>
           </div>
         </div>
@@ -248,6 +255,24 @@ function MaterialsTab({ result }) {
           </div>
         )
       })}
+      {/* Material condition legend */}
+      <div className="card card--flat" style={{ marginTop: 12, padding: '14px 16px' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>Обозначения состояния</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: '#66BB6A', flexShrink: 0 }} />
+            <span style={{ color: 'var(--text-secondary)' }}>Хорошее</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: '#FFCA28', flexShrink: 0 }} />
+            <span style={{ color: 'var(--text-secondary)' }}>Удовлетворительное</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: '#EF5350', flexShrink: 0 }} />
+            <span style={{ color: 'var(--text-secondary)' }}>Требует ремонта</span>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

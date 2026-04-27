@@ -73,7 +73,8 @@ async def health_check():
 @app.post("/api/analyze")
 async def analyze_image(
     file: UploadFile = File(...),
-    total_area_m2: float = 450.0,
+    facade_width: float = 20.0,
+    facade_height: float = 12.0,
 ):
     """Upload a facade photo for analysis."""
     if analyzer is None or not analyzer.models_loaded:
@@ -92,6 +93,8 @@ async def analyze_image(
 
         logger.info(f"Analyzing image: {file.filename} ({len(image_bytes)} bytes)")
 
+        total_area_m2 = round(facade_width * facade_height, 1)
+
         result = analyzer.analyze(image_bytes)
         analysis_id = result["id"]
 
@@ -108,6 +111,8 @@ async def analyze_image(
             "id": analysis_id,
             "overall_score": result["overall_score"],
             "overall_condition": result["overall_condition"],
+            "facade_width": facade_width,
+            "facade_height": facade_height,
             "total_area_m2": total_area_m2,
             "total_area_px": result["total_area_px"],
             "damaged_area_px": result["damaged_area_px"],

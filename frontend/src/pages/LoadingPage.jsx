@@ -27,7 +27,8 @@ export default function LoadingPage() {
       return
     }
 
-    const area = parseFloat(sessionStorage.getItem('totalArea') || '450')
+    const facadeWidth = parseFloat(sessionStorage.getItem('facadeWidth') || '20')
+    const facadeHeight = parseFloat(sessionStorage.getItem('facadeHeight') || '12')
 
     // Progress animation during analysis
     let c = 0
@@ -37,7 +38,7 @@ export default function LoadingPage() {
       else clearInterval(t)
     }, 3000)
 
-    analyzeImage(file, area)
+    analyzeImage(file, facadeWidth, facadeHeight)
       .then((r) => {
         clearInterval(t)
         setStep(STEPS.length - 1)

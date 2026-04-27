@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-const COLORS = ['#EF5350', '#FFCA28', '#42A5F5', '#66BB6A', '#FF9E40']
+const COLORS = ['#EF5350', '#FFCA28', '#42A5F5', '#66BB6A', '#FF9E40', '#AB47BC', '#26C6DA', '#8D6E63']
 
 export default function DamageChart({ data, size = 200 }) {
   const canvasRef = useRef(null)
@@ -14,7 +14,6 @@ export default function DamageChart({ data, size = 200 }) {
     function animate(now) {
       const elapsed = now - start
       const t = Math.min(elapsed / duration, 1)
-      // easeOutCubic
       const p = 1 - Math.pow(1 - t, 3)
       setProgress(p)
       if (t < 1) raf = requestAnimationFrame(animate)
@@ -78,10 +77,34 @@ export default function DamageChart({ data, size = 200 }) {
   }, [data, size, progress])
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: size, height: size, display: 'block', margin: '0 auto' }}
-    />
+    <div>
+      <canvas
+        ref={canvasRef}
+        style={{ width: size, height: size, display: 'block', margin: '0 auto' }}
+      />
+      {/* Legend */}
+      <div style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+        gap: '8px 16px',
+        marginTop: 16,
+        padding: '0 8px',
+      }}>
+        {(data || []).map((item, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{
+              width: 10, height: 10, borderRadius: 2,
+              background: COLORS[i % COLORS.length],
+              flexShrink: 0,
+            }} />
+            <span style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+              {item.label} ({item.value}%)
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 

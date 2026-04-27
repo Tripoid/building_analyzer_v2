@@ -7,7 +7,8 @@ export default function UploadPage() {
   const [file, setFile] = useState(null)
   const [preview, setPreview] = useState(null)
   const [dragActive, setDragActive] = useState(false)
-  const [totalArea, setTotalArea] = useState('450')
+  const [facadeWidth, setFacadeWidth] = useState('20')
+  const [facadeHeight, setFacadeHeight] = useState('12')
 
   const handleFile = useCallback((f) => {
     if (!f || !f.type.startsWith('image/')) return
@@ -23,12 +24,12 @@ export default function UploadPage() {
     if (e.dataTransfer.files?.[0]) handleFile(e.dataTransfer.files[0])
   }, [handleFile])
 
+  const area = (parseFloat(facadeWidth) || 0) * (parseFloat(facadeHeight) || 0)
+
   const handleAnalyze = () => {
     if (!file) return
-    // Store file in sessionStorage as data URL for the loading page to pick up
-    sessionStorage.setItem('demoMode', 'false')
-    sessionStorage.setItem('totalArea', totalArea || '450')
-    // We need to pass the file — use a global for simplicity (files can't go to sessionStorage)
+    sessionStorage.setItem('facadeWidth', facadeWidth || '20')
+    sessionStorage.setItem('facadeHeight', facadeHeight || '12')
     window.__uploadedFile = file
     navigate('/loading')
   }
@@ -101,21 +102,47 @@ export default function UploadPage() {
           )}
         </div>
 
-        {/* Area input */}
-        <div className="card card--flat" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <label style={{ fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span>📐</span> Площадь фасада (м²)
-          </label>
-          <input
-            type="number"
-            className="input"
-            value={totalArea}
-            onChange={(e) => setTotalArea(e.target.value)}
-            placeholder="450"
-            id="area-input"
-          />
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-            Используется для пересчёта повреждений в квадратные метры
+        {/* Dimensions input */}
+        <div className="card card--flat" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>📐</span> Размеры фасада
+          </div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4, display: 'block' }}>Ширина (м)</label>
+              <input
+                type="number"
+                className="input"
+                value={facadeWidth}
+                onChange={(e) => setFacadeWidth(e.target.value)}
+                placeholder="20"
+                id="width-input"
+                min="1"
+                step="0.5"
+              />
+            </div>
+            <span style={{ fontSize: 20, color: 'var(--text-secondary)', marginTop: 14 }}>×</span>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4, display: 'block' }}>Высота (м)</label>
+              <input
+                type="number"
+                className="input"
+                value={facadeHeight}
+                onChange={(e) => setFacadeHeight(e.target.value)}
+                placeholder="12"
+                id="height-input"
+                min="1"
+                step="0.5"
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              Площадь вычисляется автоматически
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
+              {area > 0 ? `${area.toFixed(1)} м²` : '—'}
+            </span>
           </div>
         </div>
 
