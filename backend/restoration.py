@@ -1,157 +1,120 @@
 """
-Facade Restoration — Stable Diffusion Inpainting.
-Uses runwayml/stable-diffusion-inpainting to fill detected defect areas
-with realistic restored facade texture.
+Facade Restoration — LaMa Inpainting + OpenCV fallback.
+
+Small masks (<2 % of image area)  → cv2.inpaint (TELEA, instant, no GPU needed)
+Large masks (≥2 %)                → LaMa (Large Mask Inpainting, ~200 MB model,
+                                    downloads automatically on first run)
+
+LaMa advantages over Stable Diffusion for facades:
+  • Trained specifically for texture repair, not image generation
+  • Preserves surrounding plaster / brick / concrete texture seamlessly
+  • Handles arbitrarily large masks without "hallucinating" new content
+  • Works at full resolution — no 512 px downscale artefacts
+  • 10-20× faster than SD, runs on CPU if no GPU is available
 """
 
-import os
-import gc
 import cv2
-import torch
+import gc
 import numpy as np
 from PIL import Image
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded singleton
-_pipeline = None
+_lama: object = None   # lazy singleton
 
 
-def _load_pipeline(device: str = "cuda"):
-    """Load the SD inpainting pipeline (cached singleton)."""
-    global _pipeline
-    if _pipeline is not None:
-        return _pipeline
+def _load_lama():
+    """Load LaMa model once and cache it."""
+    global _lama
+    if _lama is not None:
+        return _lama
+    try:
+        from simple_lama_inpainting import SimpleLama
+    except ImportError as e:
+        raise RuntimeError(
+            "simple-lama-inpainting not installed. "
+            "Run: pip install simple-lama-inpainting"
+        ) from e
 
-    logger.info("Loading Stable Diffusion Inpainting model...")
-    from diffusers import StableDiffusionInpaintPipeline
-
-    _pipeline = StableDiffusionInpaintPipeline.from_pretrained(
-        "runwayml/stable-diffusion-inpainting",
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        safety_checker=None,
-        requires_safety_checker=False,
-    ).to(device)
-
-    # Optimizations
-    if device == "cuda":
-        try:
-            _pipeline.enable_xformers_memory_efficient_attention()
-            logger.info("xformers memory-efficient attention enabled")
-        except Exception:
-            pass
-        _pipeline.enable_attention_slicing()
-
-    logger.info("SD Inpainting model loaded successfully.")
-    return _pipeline
+    logger.info("Loading LaMa inpainting model (first run downloads ~200 MB)…")
+    _lama = SimpleLama()
+    logger.info("LaMa model ready.")
+    return _lama
 
 
 def restore_facade(
     img_rgb: np.ndarray,
     defect_masks: dict,
     output_path: str,
-    device: str = "cuda",
-    prompt: str = (
-        "clean restored building facade wall, smooth plaster surface, "
-        "repaired building exterior, no cracks no damage, photorealistic"
-    ),
-    negative_prompt: str = (
-        "cracks, damage, broken, dirty, graffiti, stains, moss, "
-        "rust, peeling paint, deteriorated, blurry, low quality"
-    ),
-    num_inference_steps: int = 30,
-    guidance_scale: float = 7.5,
-    strength: float = 0.75,
+    device: str = "cuda",        # kept for API compatibility; LaMa auto-selects
+    **_kwargs,                   # absorb legacy SD params (prompt, strength, …)
 ) -> str:
     """
-    Restore facade by inpainting defect areas using Stable Diffusion.
+    Restore facade by inpainting defect areas.
 
     Args:
-        img_rgb: Original image in RGB format
-        defect_masks: Dict of {defect_type: boolean_mask}
-        output_path: Where to save the restored image
-        device: 'cuda' or 'cpu'
+        img_rgb:      Image in RGB uint8 format.
+        defect_masks: {any_key: bool ndarray} — defect pixel masks.
+        output_path:  Where to save the result (JPEG).
+        device:       Ignored — LaMa selects device automatically.
 
     Returns:
-        Path to saved restoration image
+        output_path
     """
-    # Build combined defect mask
     h, w = img_rgb.shape[:2]
-    combined_mask = np.zeros((h, w), dtype=np.uint8)
+    total_px = h * w
+
+    # ── 1. Build combined binary mask ────────────────────────────────────────
+    combined = np.zeros((h, w), dtype=np.uint8)
     for mask in defect_masks.values():
         if mask is not None and np.any(mask):
-            combined_mask |= mask.astype(np.uint8)
+            combined |= mask.astype(np.uint8)
 
-    if not np.any(combined_mask):
-        # No defects — just save original
+    if not np.any(combined):
+        logger.info("No defects detected — skipping restoration.")
         cv2.imwrite(output_path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
         return output_path
 
-    # Dilate mask slightly for better inpainting coverage
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    dilated_mask = cv2.dilate(combined_mask * 255, kernel, iterations=2)
+    # ── 2. Moderate dilation (cover crack edges, not the whole facade) ───────
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    dilated = cv2.dilate(combined * 255, kernel, iterations=2)   # ~14 px border
 
-    # SD Inpainting expects 512x512 images for best quality
-    # Process in tiles if image is larger, or resize
-    target_size = 512
+    mask_ratio = float(np.count_nonzero(dilated)) / total_px
+    logger.info(f"Defect mask coverage: {mask_ratio:.1%}")
 
-    # Resize to SD-compatible size while preserving aspect ratio
-    scale = target_size / max(h, w)
-    new_w, new_h = int(w * scale), int(h * scale)
-    # Round to nearest 8 (SD requirement)
-    new_w = (new_w // 8) * 8
-    new_h = (new_h // 8) * 8
-
-    img_resized = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    mask_resized = cv2.resize(dilated_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-
-    # Convert to PIL
-    pil_image = Image.fromarray(img_resized).convert("RGB")
-    pil_mask = Image.fromarray(mask_resized).convert("L")
-
-    # Load pipeline
-    pipe = _load_pipeline(device)
-
-    logger.info(f"Running SD inpainting ({new_w}x{new_h}, {num_inference_steps} steps)...")
-
-    with torch.no_grad():
-        result = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=pil_image,
-            mask_image=pil_mask,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            strength=strength,
-            width=new_w,
-            height=new_h,
+    # ── 3. Small mask → OpenCV TELEA (no model, <1 ms) ──────────────────────
+    if mask_ratio < 0.02:
+        logger.info("Small mask — using OpenCV TELEA inpaint.")
+        restored = cv2.inpaint(
+            cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR),
+            dilated, inpaintRadius=7, flags=cv2.INPAINT_TELEA
         )
+        cv2.imwrite(output_path, restored)
+        return output_path
 
-    restored_pil = result.images[0]
+    # ── 4. Large mask → LaMa ─────────────────────────────────────────────────
+    logger.info("Large mask — using LaMa inpainting…")
+    lama = _load_lama()
 
-    # Resize back to original dimensions
-    restored_np = np.array(restored_pil)
-    restored_full = cv2.resize(restored_np, (w, h), interpolation=cv2.INTER_LANCZOS4)
+    pil_image = Image.fromarray(img_rgb)
+    pil_mask  = Image.fromarray(dilated)        # L or RGB — SimpleLama handles both
 
-    # Blend: only replace defect areas, keep original elsewhere
-    # Use soft blending at mask borders for seamless transition
-    mask_full = cv2.resize(dilated_mask, (w, h), interpolation=cv2.INTER_LINEAR)
-    # Feather the mask edges
-    mask_blurred = cv2.GaussianBlur(mask_full.astype(np.float32), (21, 21), 0)
-    mask_blurred = np.clip(mask_blurred / 255.0, 0, 1)
-    mask_3ch = np.stack([mask_blurred] * 3, axis=-1)
+    result_pil = lama(pil_image, pil_mask)
+    result_np  = np.array(result_pil)           # uint8 RGB, same size as input
 
-    # Composite: original * (1-mask) + restored * mask
-    final = (img_rgb.astype(np.float32) * (1 - mask_3ch) +
-             restored_full.astype(np.float32) * mask_3ch).astype(np.uint8)
+    # ── 5. Feathered composite — keep untouched areas pixel-perfect ──────────
+    feather = cv2.GaussianBlur(dilated.astype(np.float32), (15, 15), 0)
+    alpha   = np.clip(feather / 255.0, 0.0, 1.0)
+    alpha3  = np.stack([alpha] * 3, axis=-1)
 
-    # Save
+    final = (
+        img_rgb.astype(np.float32)    * (1.0 - alpha3) +
+        result_np.astype(np.float32)  * alpha3
+    ).clip(0, 255).astype(np.uint8)
+
     cv2.imwrite(output_path, cv2.cvtColor(final, cv2.COLOR_RGB2BGR))
+    logger.info(f"LaMa restoration saved → {output_path}")
 
-    # Free VRAM
-    torch.cuda.empty_cache()
     gc.collect()
-
-    logger.info(f"Restoration saved to {output_path}")
     return output_path

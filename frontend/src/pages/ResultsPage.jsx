@@ -91,14 +91,13 @@ export default function ResultsPage() {
           </div>
           <div>
             <span className="badge" style={{ background:`color-mix(in srgb, ${sc} 15%, transparent)`,color:sc }}>{result.overall_condition}</span>
-            <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:10 }}>
-              {result.facade_width && result.facade_height
-                ? `Размеры: ${result.facade_width} × ${result.facade_height} м`
-                : `Площадь: ${result.total_area_m2} м²`
-              }
-            </div>
+            {result.facade_width && result.facade_height && (
+              <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:10 }}>
+                {`Размеры: ${result.facade_width} × ${result.facade_height} м`}
+              </div>
+            )}
             <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:4 }}>Площадь: {result.total_area_m2} м²</div>
-            <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:4 }}>Повреждено: {result.damaged_area_m2} м² ({Math.round(result.damaged_area_m2/result.total_area_m2*100)}%)</div>
+            <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:4 }}>Повреждено: {result.damaged_area_m2} м² ({result.total_area_m2 > 0 ? Math.round(result.damaged_area_m2/result.total_area_m2*100) : 0}%)</div>
           </div>
         </div>
       </div>

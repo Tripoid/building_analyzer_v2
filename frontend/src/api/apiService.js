@@ -285,7 +285,7 @@ export function generatePdfReport(result) {
     </div>
     <div class="summary-item">
       <div class="label">Повреждено</div>
-      <div class="value" style="font-size:14pt;color:${scoreColor}">${result.damaged_area_m2} м² (${Math.round(result.damaged_area_m2 / result.total_area_m2 * 100)}%)</div>
+      <div class="value" style="font-size:14pt;color:${scoreColor}">${result.damaged_area_m2} м² (${result.total_area_m2 > 0 ? Math.round(result.damaged_area_m2 / result.total_area_m2 * 100) : 0}%)</div>
     </div>
   </div>
 

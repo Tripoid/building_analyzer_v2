@@ -1,10 +1,10 @@
 """
 FacadeAnalyzer — ML Pipeline for building facade analysis.
-Consolidates 3 Colab prototype cells into a production-quality class.
 
-Cell 1: Grounding DINO + SAM → geometry detection (windows, doors, balconies)
-Cell 2: U-2-Net (rembg) + SAM3 + CLIPSeg + SAM2 → wall defect detection
-Cell 3: CLIPSeg + SAM2 → material identification with z-index stacking
+Step 1: Grounding DINO + SAM → geometry detection (windows, doors, balconies)
+Step 2: rembg + Grounding DINO + SAM → wall and element defect detection
+Step 3: Grounding DINO + SAM → material identification with z-index stacking
+Step 4: Wall layer classification based on defect and material overlap
 """
 
 import cv2
@@ -253,8 +253,6 @@ class FacadeAnalyzer:
         self._dino_model = None
         self._sam_processor = None
         self._sam_model = None
-        self._clipseg_processor = None
-        self._clipseg_model = None
 
     def load_models(self):
         """Load and cache all ML models. Call once at startup."""
@@ -272,13 +270,6 @@ class FacadeAnalyzer:
         from transformers import SamModel, SamProcessor
         self._sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
         self._sam_model = SamModel.from_pretrained("facebook/sam-vit-base").to(self.device)
-
-        logger.info("Loading CLIPSeg...")
-        from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
-        self._clipseg_processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
-        self._clipseg_model = CLIPSegForImageSegmentation.from_pretrained(
-            "CIDAS/clipseg-rd64-refined"
-        ).to(self.device)
 
         self.models_loaded = True
         logger.info("All models loaded successfully.")
@@ -404,7 +395,7 @@ class FacadeAnalyzer:
     def detect_defects(
         self, img_rgb: np.ndarray, geom_masks: Dict[str, np.ndarray]
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
-        """Detect wall and element defects using rembg + CLIPSeg + SAM2 AMG."""
+        """Detect wall and element defects using rembg + Grounding DINO + SAM."""
         from rembg import remove
         original_size = img_rgb.shape[:2]
         params = _adaptive_params(img_rgb.shape)
@@ -421,18 +412,31 @@ class FacadeAnalyzer:
                 elements |= geom_masks[key]
         bare_wall = silhouette & ~elements
 
-        # 3. Wall defects via CLIPSeg
-        logger.info("Scanning wall defects (CLIPSeg)...")
-        wall_defect_masks = self._clipseg_segment(
-            img_rgb, WALL_DEFECT_PROMPTS, CLASS_MAP_WALL_DEFECTS,
-            original_size, region_mask=bare_wall, threshold=0.20
+        # 3. Wall defects via Grounding DINO + SAM
+        logger.info("Scanning wall defects (DINO + SAM)...")
+        wall_defect_prompt = (
+            "crack in wall. peeling paint on wall. exposed brick area. "
+            "water damage stain on wall. rust stain on surface. "
+            "green moss on wall. white salt efflorescence. concrete spalling damage."
+        )
+        wall_defect_masks = self._dino_sam_segment(
+            img_rgb, wall_defect_prompt, CLASS_MAP_WALL_DEFECTS,
+            original_size, region_mask=bare_wall,
+            threshold=params["dino_threshold"],
+            text_threshold=params["dino_text_threshold"],
         )
 
-        # 4. Element defects via CLIPSeg
-        logger.info("Scanning element defects (CLIPSeg)...")
-        element_defect_masks = self._clipseg_segment(
-            img_rgb, ELEMENT_DEFECT_PROMPTS, CLASS_MAP_ELEMENT_DEFECTS,
-            original_size, threshold=0.25
+        # 4. Element defects via DINO + SAM
+        logger.info("Scanning element defects (DINO + SAM)...")
+        element_defect_prompt = (
+            "broken glass in window. damaged wooden door. "
+            "rusty metal element. damaged balcony railing."
+        )
+        element_defect_masks = self._dino_sam_segment(
+            img_rgb, element_defect_prompt, CLASS_MAP_ELEMENT_DEFECTS,
+            original_size,
+            threshold=params["dino_threshold"],
+            text_threshold=params["dino_text_threshold"],
         )
 
         # Spatial routing: element defects only within their geometry
@@ -462,9 +466,10 @@ class FacadeAnalyzer:
         self, img_rgb: np.ndarray, geom_masks: Dict[str, np.ndarray],
         wall_defect_masks: Optional[Dict[str, np.ndarray]] = None
     ) -> Dict[str, np.ndarray]:
-        """Identify facade materials using CLIPSeg with z-index stacking."""
+        """Identify facade materials using Grounding DINO + SAM with z-index stacking."""
         from rembg import remove
         original_size = img_rgb.shape[:2]
+        params = _adaptive_params(img_rgb.shape)
 
         # Rebuild bare wall
         rgba = remove(img_rgb)
@@ -475,11 +480,19 @@ class FacadeAnalyzer:
                 elements |= geom_masks[key]
         bare_wall = silhouette & ~elements
 
-        # CLIPSeg material segmentation
-        logger.info("Scanning materials (CLIPSeg)...")
-        raw_material_masks = self._clipseg_segment(
-            img_rgb, MATERIAL_PROMPTS, CLASS_MAP_MATERIALS,
-            original_size, region_mask=bare_wall, threshold=0.18
+        # DINO + SAM material segmentation
+        logger.info("Scanning materials (DINO + SAM)...")
+        material_prompt = (
+            "grey concrete stone wall. terracotta red brick masonry wall. "
+            "plain smooth cement plaster wall. decorative textured plaster facade. "
+            "architectural molding cornice decoration. ceramic tile cladding facade. "
+            "painted surface wall coating."
+        )
+        raw_material_masks = self._dino_sam_segment(
+            img_rgb, material_prompt, CLASS_MAP_MATERIALS,
+            original_size, region_mask=bare_wall,
+            threshold=params["dino_threshold"],
+            text_threshold=params["dino_text_threshold"],
         )
 
         # Z-INDEX stacking: structural → base → finish → decorative
@@ -592,6 +605,11 @@ class FacadeAnalyzer:
         original_size = img_rgb.shape[:2]
         paths = {}
 
+        # Save original preprocessed image (needed by LayersTab viewer)
+        original_path = os.path.join(output_dir, "original.jpg")
+        cv2.imwrite(original_path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
+        paths["original"] = original_path
+
         # 1. Heatmap — defect density
         heatmap = np.zeros(original_size, dtype=np.float32)
         for mask in wall_defect_masks.values():
@@ -686,7 +704,6 @@ class FacadeAnalyzer:
                 layer_path = os.path.join(output_dir, f"layer_defect_{dtype}.jpg")
                 cv2.imwrite(layer_path, cv2.cvtColor(layer_canvas, cv2.COLOR_RGB2BGR))
                 paths[f"layer_defect_{dtype}"] = layer_path
-                from ml_pipeline import DEFECT_DISPLAY_RU
                 layers_info.append({
                     "id": f"layer_defect_{dtype}",
                     "type": "defect",
@@ -706,7 +723,6 @@ class FacadeAnalyzer:
                 layer_path = os.path.join(output_dir, f"layer_material_{mat_name}.jpg")
                 cv2.imwrite(layer_path, cv2.cvtColor(layer_canvas, cv2.COLOR_RGB2BGR))
                 paths[f"layer_material_{mat_name}"] = layer_path
-                from ml_pipeline import MATERIAL_DISPLAY_RU
                 layers_info.append({
                     "id": f"layer_material_{mat_name}",
                     "type": "material",
@@ -715,44 +731,28 @@ class FacadeAnalyzer:
                     "color": f"rgb({color[0]},{color[1]},{color[2]})",
                 })
 
-        # 6. Restoration — SD Inpainting with building silhouette mask
-        logger.info("Generating SD restoration visualization...")
+        # 6. Restoration — LaMa inpainting on detected defect zones
+        logger.info("Generating LaMa restoration visualization...")
         try:
             from restoration import restore_facade
             restoration_path = os.path.join(output_dir, "restoration.jpg")
 
-            # Use building silhouette as base, combined with defect masks
-            from rembg import remove as rembg_remove
-            rgba_restore = rembg_remove(img_rgb)
-            building_silhouette = (rgba_restore[:, :, 3] > 128).astype(np.uint8)
-
-            # Combine: all defects + expand to cover undetected damage
-            combined_defect_mask = np.zeros(original_size, dtype=np.uint8)
-            for mask in wall_defect_masks.values():
-                if np.any(mask):
-                    combined_defect_mask |= mask.astype(np.uint8)
-            for mask in element_defect_masks.values():
-                if np.any(mask):
-                    combined_defect_mask |= mask.astype(np.uint8)
-
-            # Aggressively expand defect mask to catch nearby undetected damage
-            expand_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-            expanded_mask = cv2.dilate(combined_defect_mask * 255, expand_kernel, iterations=3)
-
-            # Constrain to building silhouette
-            final_restore_mask = {
-                "combined": (expanded_mask > 0) & (building_silhouette > 0)
+            # Pass defect masks directly — restoration.py handles dilation internally.
+            # Do NOT pre-expand here: LaMa works best with tight, accurate masks.
+            defect_masks_for_restore = {
+                **{k: v for k, v in wall_defect_masks.items() if np.any(v)},
+                **{k: v for k, v in element_defect_masks.items() if np.any(v)},
             }
 
             restore_facade(
                 img_rgb=img_rgb,
-                defect_masks=final_restore_mask,
+                defect_masks=defect_masks_for_restore,
                 output_path=restoration_path,
                 device=str(self.device),
             )
             paths["restoration"] = restoration_path
         except Exception as e:
-            logger.warning(f"SD restoration failed (non-critical): {e}")
+            logger.warning(f"LaMa restoration failed (non-critical): {e}")
             fallback_path = os.path.join(output_dir, "restoration.jpg")
             cv2.imwrite(fallback_path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
             paths["restoration"] = fallback_path
@@ -774,12 +774,6 @@ class FacadeAnalyzer:
         img_rgb = self.preprocess(image_bytes)
         original_size = img_rgb.shape[:2]
         total_px = original_size[0] * original_size[1]
-
-        # Save original preprocessed image
-        cv2.imwrite(
-            os.path.join(result_dir, "original.jpg"),
-            cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-        )
 
         # Step 1
         logger.info("Step 1: Geometry detection...")
@@ -903,78 +897,82 @@ class FacadeAnalyzer:
         }
 
     # ─────────────────────────────────────────────────
-    # HELPER: CLIPSeg segmentation
+    # HELPER: Grounding DINO + SAM segmentation
     # ─────────────────────────────────────────────────
 
-    def _clipseg_segment(
-        self, img_rgb: np.ndarray, prompts: List[str], class_map: dict,
+    def _dino_sam_segment(
+        self,
+        img_rgb: np.ndarray,
+        prompt: str,
+        class_map: dict,
         original_size: Tuple[int, int],
         region_mask: Optional[np.ndarray] = None,
-        threshold: float = 0.30,
+        threshold: float = 0.25,
+        text_threshold: float = 0.25,
     ) -> Dict[str, np.ndarray]:
-        """Generic CLIPSeg segmentation with optional region masking."""
-        from sam2.build_sam import build_sam2
-        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-
-        params = _adaptive_params(original_size)
-
+        """Generic Grounding DINO + SAM segmentation with optional region masking."""
         image = Image.fromarray(img_rgb)
-        inputs = self._clipseg_processor(
-            text=prompts,
-            images=[image] * len(prompts),
-            padding=True,
-            return_tensors="pt"
+
+        dino_inputs = self._dino_processor(
+            images=image, text=prompt, return_tensors="pt"
         ).to(self.device)
 
         with torch.no_grad():
-            outputs = self._clipseg_model(**inputs)
+            dino_outputs = self._dino_model(**dino_inputs)
 
-        preds = torch.nn.functional.interpolate(
-            outputs.logits.unsqueeze(1), size=original_size,
-            mode="bilinear", align_corners=False
-        ).squeeze(1)
-        probabilities = torch.sigmoid(preds).cpu().numpy()
+        results = self._dino_processor.post_process_grounded_object_detection(
+            dino_outputs, dino_inputs.input_ids,
+            threshold=threshold,
+            text_threshold=text_threshold,
+            target_sizes=[original_size]
+        )[0]
 
-        # SAM2 AMG for physical masks
-        weights_path = "sam2_hiera_small.pt"
-        if not os.path.exists(weights_path):
-            import urllib.request
-            logger.info("Downloading SAM2 weights...")
-            urllib.request.urlretrieve(
-                "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt",
-                weights_path
-            )
-
-        sam2_model = build_sam2("sam2_hiera_s.yaml", weights_path, device=self.device)
-        mask_generator = SAM2AutomaticMaskGenerator(
-            model=sam2_model,
-            points_per_side=params["points_per_side"],
-            pred_iou_thresh=0.8,
-            stability_score_thresh=0.8,
-            min_mask_region_area=params["min_mask_area"],
-        )
-
-        with torch.no_grad():
-            masks_amg = mask_generator.generate(img_rgb)
+        all_scores = results["scores"].cpu()
+        valid = all_scores > threshold
+        raw_boxes = results["boxes"].cpu()[valid]
+        raw_scores = all_scores[valid]
+        labels_out = results.get("text_labels", results.get("labels"))
+        raw_labels = [labels_out[i] for i, v in enumerate(valid) if v]
 
         result_masks = {k: np.zeros(original_size, dtype=bool) for k in class_map}
 
-        for ann in masks_amg:
-            m = ann["segmentation"]
-            if region_mask is not None and not np.any(m & region_mask):
+        if len(raw_boxes) == 0:
+            return result_masks
+
+        # NMS across categories
+        class_keys = list(class_map.keys())
+        category_idxs = torch.tensor([
+            class_keys.index(_get_base_class(l, class_map))
+            if _get_base_class(l, class_map) in class_keys else 99
+            for l in raw_labels
+        ])
+        keep = ops.batched_nms(raw_boxes, raw_scores, category_idxs, iou_threshold=0.5).numpy()
+        boxes = raw_boxes[keep].numpy()
+        labels = [raw_labels[i] for i in keep]
+
+        # SAM segmentation on detected boxes
+        sam_inputs = self._sam_processor(
+            image, input_boxes=[boxes.tolist()], return_tensors="pt"
+        ).to(self.device)
+
+        with torch.no_grad():
+            sam_outputs = self._sam_model(**sam_inputs)
+
+        masks = self._sam_processor.image_processor.post_process_masks(
+            sam_outputs.pred_masks.cpu(),
+            sam_inputs["original_sizes"].cpu(),
+            sam_inputs["reshaped_input_sizes"].cpu()
+        )
+        best_masks = masks[0][:, 0, :, :].numpy()
+
+        for i, label in enumerate(labels):
+            base_class = _get_base_class(str(label), class_map)
+            if base_class is None or i >= len(best_masks):
                 continue
-
-            avg_scores = [probabilities[i][m].mean() for i in range(len(prompts))]
-            best_idx = np.argmax(avg_scores)
-
-            if avg_scores[best_idx] > threshold:
-                class_name = _get_base_class(prompts[best_idx], class_map)
-                if class_name:
-                    final_mask = m & region_mask if region_mask is not None else m
-                    result_masks[class_name] |= final_mask
-
-        del sam2_model, mask_generator
-        torch.cuda.empty_cache()
-        gc.collect()
+            final_mask = best_masks[i].astype(bool)
+            if region_mask is not None:
+                final_mask &= region_mask
+            if np.any(final_mask):
+                result_masks[base_class] |= final_mask
 
         return result_masks
