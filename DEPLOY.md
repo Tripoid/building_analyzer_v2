@@ -44,7 +44,7 @@ ssh -p 44023 user@YOUR_SERVER_IP
 
 ```bash
 cd /opt
-git clone https://github.com/Tripoid/building_analyzer.git facade-analyzer
+git clone https://github.com/Tripoid/building_analyzer_v2.git facade-analyzer
 cd facade-analyzer
 ```
 
