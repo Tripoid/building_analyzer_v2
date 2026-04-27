@@ -20,9 +20,17 @@ echo "App port:    $APP_PORT (external: 44025)"
 # ── 1. System dependencies ──
 echo ""
 echo "▶ [1/5] Installing system dependencies..."
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv python3-dev curl wget \
-    libxcb1 libxcb-shm0 libxcb-xfixes0 libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender1
+# Core tools
+apt-get install -y -qq python3 python3-pip python3-venv python3-dev curl wget git
+# OpenCV runtime deps (Ubuntu 24.04 Noble — libgl1 replaces libgl1-mesa-glx)
+apt-get install -y -qq \
+    libgl1 libglib2.0-0t64 libsm6 libxext6 libxrender1 \
+    libxcb1 libxcb-shm0 libxcb-xfixes0 \
+    libfontconfig1 libice6 \
+    libgomp1 \
+    || true
 
 # Install Node.js (LTS) if missing
 if ! command -v node &> /dev/null; then
