@@ -422,6 +422,14 @@ class FacadeAnalyzer:
             text_threshold=params["dino_text_threshold"],
         )
 
+        # Sanity cap for wall defects: a single type covering >70% of bare wall is a false positive
+        bare_wall_px = int(bare_wall.sum()) or 1
+        for key in list(wall_defect_masks.keys()):
+            coverage = wall_defect_masks[key].sum() / bare_wall_px
+            if coverage > 0.70:
+                logger.warning(f"Wall defect '{key}' covers {coverage:.1%} of bare wall — zeroing (false positive)")
+                wall_defect_masks[key] = np.zeros(original_size, dtype=bool)
+
         # 4. Element defects via DINO + SAM
         logger.info("Scanning element defects (DINO + SAM)...")
         element_defect_prompt = (
@@ -448,6 +456,14 @@ class FacadeAnalyzer:
             element_defect_masks["rusty_metal"] &= (mask_balconies | mask_windows)
         if "damaged_railing" in element_defect_masks:
             element_defect_masks["damaged_railing"] &= mask_balconies
+
+        # Sanity cap: element defect covering >25% of total silhouette is a false positive
+        building_px = int(silhouette.sum()) or 1
+        for key in list(element_defect_masks.keys()):
+            coverage = element_defect_masks[key].sum() / building_px
+            if coverage > 0.25:
+                logger.warning(f"Element defect '{key}' covers {coverage:.1%} — zeroing (false positive)")
+                element_defect_masks[key] = np.zeros(original_size, dtype=bool)
 
         torch.cuda.empty_cache()
         gc.collect()
@@ -731,11 +747,10 @@ class FacadeAnalyzer:
             from restoration import restore_facade
             restoration_path = os.path.join(output_dir, "restoration.jpg")
 
-            # Pass defect masks directly — restoration.py handles dilation internally.
-            # Do NOT pre-expand here: LaMa works best with tight, accurate masks.
+            # Only restore wall surface defects — element defects (broken glass,
+            # damaged railings) are structural and must not be inpainted over.
             defect_masks_for_restore = {
-                **{k: v for k, v in wall_defect_masks.items() if np.any(v)},
-                **{k: v for k, v in element_defect_masks.items() if np.any(v)},
+                k: v for k, v in wall_defect_masks.items() if np.any(v)
             }
 
             restore_facade(

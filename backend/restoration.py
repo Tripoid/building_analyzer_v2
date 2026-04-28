@@ -93,6 +93,15 @@ def restore_facade(
         cv2.imwrite(output_path, restored)
         return output_path
 
+    # ── 3b. Mask too large for meaningful inpainting → return original ────────
+    if mask_ratio > 0.40:
+        logger.warning(
+            f"Defect mask covers {mask_ratio:.1%} of the image — "
+            "too large for inpainting. Returning original."
+        )
+        cv2.imwrite(output_path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
+        return output_path
+
     # ── 4. Large mask → LaMa ─────────────────────────────────────────────────
     logger.info("Large mask — using LaMa inpainting…")
     lama = _load_lama()
