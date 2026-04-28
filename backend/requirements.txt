@@ -27,3 +27,7 @@ simple-lama-inpainting>=0.1.2
 opencv-python-headless>=4.8.0
 numpy>=1.24.0
 Pillow>=9.0.0
+
+# Price updater (leroymerlin.ru scraper)
+requests>=2.28.0
+beautifulsoup4>=4.12.0

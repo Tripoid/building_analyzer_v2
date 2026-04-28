@@ -65,6 +65,11 @@ if [ ! -f sam2_hiera_small.pt ]; then
     fi
     echo "  ✅ SAM2 weights downloaded"
 fi
+
+# Fetch material prices from leroymerlin.ru (cached 7 days)
+echo "  Fetching material prices..."
+python3 price_updater.py && echo "  ✅ Prices updated" || echo "  ⚠️  Price fetch failed — using fallback prices"
+
 echo "  ✅ Python environment ready"
 
 # ── 3. Build React frontend ──

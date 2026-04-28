@@ -32,18 +32,25 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════
 
 GEOMETRY_PROMPT = (
-    "window. door. wall. balcony. roof. molding. pipe. air conditioner."
+    "window. glass pane. window frame. dormer window. glazing. "
+    "door. entrance door. front door. gate. "
+    "balcony. terrace. loggia. balcony slab. "
+    "wall. facade. building wall. "
+    "roof. gutter. eaves. parapet. "
+    "molding. architectural molding. decorative cornice. frieze. pilaster. "
+    "drainpipe. downspout. pipe. rain gutter pipe. "
+    "air conditioner. AC unit. ventilation grille. split system."
 )
 
 CLASS_MAP_GEOMETRY = {
-    "window": ["window", "pane", "glass"],
-    "door": ["door", "entrance", "gate"],
-    "balcony": ["balcony", "terrace"],
+    "window": ["window", "pane", "glass", "glazing", "dormer"],
+    "door": ["door", "entrance", "gate", "front door"],
+    "balcony": ["balcony", "terrace", "loggia"],
     "building": ["building", "facade", "wall"],
-    "roof": ["roof", "rooftop"],
-    "molding": ["cornice", "molding", "decoration"],
-    "pipe": ["drainpipe", "pipe"],
-    "ac_unit": ["air conditioner", "unit"],
+    "roof": ["roof", "rooftop", "gutter", "eaves", "parapet"],
+    "molding": ["cornice", "molding", "decoration", "frieze", "pilaster", "architectural"],
+    "pipe": ["drainpipe", "pipe", "downspout"],
+    "ac_unit": ["air conditioner", "unit", "ventilation", "grille", "split"],
 }
 
 WALL_DEFECT_PROMPTS = [
@@ -58,14 +65,14 @@ WALL_DEFECT_PROMPTS = [
 ]
 
 CLASS_MAP_WALL_DEFECTS = {
-    "crack": ["crack"],
-    "peeling": ["peeling", "plaster"],
-    "exposed_brick": ["exposed brick", "brick"],
-    "water_damage": ["water stain", "stain"],
-    "rust": ["rust"],
-    "moss": ["moss"],
-    "efflorescence": ["efflorescence"],
-    "spalling": ["spalling", "concrete"],
+    "crack":        ["crack", "fracture", "fissure", "crevice", "cleft"],
+    "peeling":      ["peeling", "flaking", "plaster", "delaminated", "blistered", "render", "spalled render"],
+    "exposed_brick":["exposed brick", "brick", "masonry", "bare brick", "unplastered"],
+    "water_damage": ["water stain", "water damage", "moisture", "stain", "leakage", "damp", "efflorescence stain"],
+    "rust":         ["rust", "corrosion", "iron stain", "oxide"],
+    "moss":         ["moss", "lichen", "algae", "biological", "growth", "green deposit"],
+    "efflorescence":["efflorescence", "salt deposit", "crystalline", "white deposit", "salt stain"],
+    "spalling":     ["spalling", "concrete", "deterioration", "defect", "chipping"],
 }
 
 ELEMENT_DEFECT_PROMPTS = [
@@ -76,20 +83,21 @@ ELEMENT_DEFECT_PROMPTS = [
 ]
 
 CLASS_MAP_ELEMENT_DEFECTS = {
-    "broken_glass": ["broken", "glass"],
-    "damaged_wood": ["damaged", "wooden", "door"],
-    "rusty_metal": ["rusty", "metal"],
-    "damaged_railing": ["cracked", "railing"],
+    "broken_glass":    ["broken", "glass", "shattered", "cracked glass", "damaged glass"],
+    "damaged_wood":    ["damaged", "wooden", "door", "wood", "rot", "deteriorated"],
+    "rusty_metal":     ["rusty", "metal", "corrosion", "iron", "rusted"],
+    "damaged_railing": ["cracked", "railing", "broken railing", "damaged railing", "deformed"],
 }
 
 # CLIPSeg prompts for material detection (CLIPSeg+AMG fusion approach)
 # Index order matches MATERIAL_CLIPSEG_IDX_MAP below.
 MATERIAL_PROMPTS_CLIPSEG = [
-    "painted plaster smooth wall facade texture",   # 0
-    "exposed bare red brick masonry wall texture",  # 1
-    "grey rough concrete stone surface texture",    # 2
-    "decorative white plaster molding cornice",     # 3
-    "glazed ceramic tile surface texture",          # 4
+    "smooth painted plaster wall facade surface texture",          # 0 → cement_plaster
+    "exposed bare red brick masonry wall texture",                  # 1 → brick
+    "grey rough concrete surface stone texture",                    # 2 → concrete
+    "decorative white stucco molding cornice ornament relief",      # 3 → molding
+    "glazed ceramic tile cladding surface texture",                 # 4 → ceramic_tile
+    "textured decorative structured plaster facade surface",        # 5 → decorative_plaster
 ]
 MATERIAL_CLIPSEG_IDX_MAP = {
     0: "cement_plaster",
@@ -97,6 +105,7 @@ MATERIAL_CLIPSEG_IDX_MAP = {
     2: "concrete",
     3: "molding",
     4: "ceramic_tile",
+    5: "decorative_plaster",
 }
 MATERIAL_CLIPSEG_CONFIDENCE = 0.28   # min CLIPSeg score to assign a material
 
@@ -463,10 +472,18 @@ class FacadeAnalyzer:
         # Use silhouette (not bare_wall) as region mask: SAM window masks expand
         # well beyond actual glass, leaving bare_wall nearly empty and filtering
         # out real cracks/peeling. Text prompts provide semantic specificity.
+        # Synonyms expand recall: DINO returns the matched phrase as a label,
+        # which CLASS_MAP_WALL_DEFECTS then maps to a canonical defect key.
         logger.info("Scanning wall defects (DINO + SAM)...")
         wall_defect_prompt = (
-            "wall crack. peeling plaster. exposed brick. "
-            "water stain. rust stain. moss. efflorescence. spalling concrete."
+            "wall crack. facade crack. concrete crack. hairline crack. surface fracture. "
+            "peeling plaster. flaking plaster. flaking paint. delaminated coating. blistered render. "
+            "exposed brick. bare brick. missing plaster. unplastered brick masonry. "
+            "water stain. water damage. moisture stain. damp patch. leakage mark. humidity stain. "
+            "rust stain. corrosion spot. iron rust mark. oxidation stain. "
+            "moss. lichen. algae on wall. biological growth. green deposit. "
+            "efflorescence. salt deposit. white crystalline deposit. salt stain. "
+            "spalling concrete. concrete deterioration. concrete defect. chipped concrete."
         )
         wall_defect_masks = self._dino_sam_segment(
             img_rgb, wall_defect_prompt, CLASS_MAP_WALL_DEFECTS,
@@ -486,8 +503,10 @@ class FacadeAnalyzer:
         # 4. Element defects via DINO + SAM
         logger.info("Scanning element defects (DINO + SAM)...")
         element_defect_prompt = (
-            "broken window glass. damaged wooden door. "
-            "rusty metal railing. cracked balcony railing."
+            "broken window glass. shattered glass. cracked glass pane. damaged glazing. "
+            "damaged wooden door. rotting wood. deteriorated wood. wood decay. "
+            "rusty metal railing. corroded metal. rusted iron. oxidized metal surface. "
+            "cracked balcony railing. broken railing. deformed railing. damaged balcony fence."
         )
         element_defect_masks = self._dino_sam_segment(
             img_rgb, element_defect_prompt, CLASS_MAP_ELEMENT_DEFECTS,
