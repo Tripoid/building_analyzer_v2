@@ -113,9 +113,6 @@ CLASS_MAP_MATERIALS = {
     "painted_surface": ["painted"],
 }
 
-# Defects that can be inpainted (surface-level, LaMa can reproduce surrounding texture).
-# Structural defects (exposed_brick, spalling) are excluded — too large, LaMa produces blobs.
-RESTORABLE_DEFECTS = {"crack", "water_damage", "efflorescence", "moss", "rust"}
 
 COLORS_GEOMETRY = {
     "window": [0, 255, 255],
@@ -812,29 +809,23 @@ class FacadeAnalyzer:
                     "color": f"rgb({color[0]},{color[1]},{color[2]})",
                 })
 
-        # 6. Restoration — LaMa inpainting on detected defect zones
-        logger.info("Generating LaMa restoration visualization...")
+        # 6. Restoration — multi-pass: LaMa surface + structural fill + glass synthesis
+        logger.info("Generating restoration visualization (multi-pass)...")
         try:
             from restoration import restore_facade
             restoration_path = os.path.join(output_dir, "restoration.jpg")
 
-            # Only restore surface-level defects — LaMa works well for small/medium
-            # localised damage (cracks, stains, moss). Skip structural defects like
-            # exposed_brick/spalling which cover large areas and cause blurry blobs.
-            defect_masks_for_restore = {
-                k: v for k, v in wall_defect_masks.items()
-                if k in RESTORABLE_DEFECTS and np.any(v)
-            }
-
             restore_facade(
                 img_rgb=img_rgb,
-                defect_masks=defect_masks_for_restore,
+                defect_masks=wall_defect_masks,          # Pass 1 + 2 (surface + structural)
                 output_path=restoration_path,
                 device=str(self.device),
+                element_defect_masks=element_defect_masks,  # Pass 3 (broken glass)
+                geom_masks=geom_masks,                      # For glass color sampling
             )
             paths["restoration"] = restoration_path
         except Exception as e:
-            logger.warning(f"LaMa restoration failed (non-critical): {e}")
+            logger.warning(f"Restoration failed (non-critical): {e}")
             fallback_path = os.path.join(output_dir, "restoration.jpg")
             cv2.imwrite(fallback_path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
             paths["restoration"] = fallback_path
