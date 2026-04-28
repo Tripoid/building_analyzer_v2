@@ -454,7 +454,6 @@ function RepairTab({ result }) {
         <div className="summary-row"><span>Материалы</span><span className="summary-row__amount">{formatCurrency(sum.materials_total||0)}</span></div>
         <div className="summary-row"><span>Работы</span><span className="summary-row__amount">{formatCurrency(sum.labor_total||0)}</span></div>
         <div className="summary-row"><span>Леса</span><span className="summary-row__amount">{formatCurrency(sum.scaffolding_total||0)}</span></div>
-        <div className="summary-row"><span>НДС 20%</span><span className="summary-row__amount">{formatCurrency(sum.vat_amount||0)}</span></div>
         <div className="divider"/>
         <div className="summary-row summary-row--total"><span>Итого</span><span className="summary-row__amount">{formatCurrency(sum.grand_total||0)}</span></div>
       </div>

@@ -410,6 +410,9 @@ class FacadeAnalyzer:
         bare_wall = silhouette & ~elements
 
         # 3. Wall defects via Grounding DINO + SAM
+        # Use silhouette (not bare_wall) as region mask: SAM window masks expand
+        # well beyond actual glass, leaving bare_wall nearly empty and filtering
+        # out real cracks/peeling. Text prompts provide semantic specificity.
         logger.info("Scanning wall defects (DINO + SAM)...")
         wall_defect_prompt = (
             "wall crack. peeling plaster. exposed brick. "
@@ -417,17 +420,17 @@ class FacadeAnalyzer:
         )
         wall_defect_masks = self._dino_sam_segment(
             img_rgb, wall_defect_prompt, CLASS_MAP_WALL_DEFECTS,
-            original_size, region_mask=bare_wall,
+            original_size, region_mask=silhouette,
             threshold=params["dino_threshold"],
             text_threshold=params["dino_text_threshold"],
         )
 
-        # Sanity cap for wall defects: a single type covering >70% of bare wall is a false positive
-        bare_wall_px = int(bare_wall.sum()) or 1
+        # Sanity cap for wall defects: a single type covering >70% of silhouette is a false positive
+        building_px = int(silhouette.sum()) or 1
         for key in list(wall_defect_masks.keys()):
-            coverage = wall_defect_masks[key].sum() / bare_wall_px
+            coverage = wall_defect_masks[key].sum() / building_px
             if coverage > 0.70:
-                logger.warning(f"Wall defect '{key}' covers {coverage:.1%} of bare wall — zeroing (false positive)")
+                logger.warning(f"Wall defect '{key}' covers {coverage:.1%} — zeroing (false positive)")
                 wall_defect_masks[key] = np.zeros(original_size, dtype=bool)
 
         # 4. Element defects via DINO + SAM
@@ -493,6 +496,9 @@ class FacadeAnalyzer:
         bare_wall = silhouette & ~elements
 
         # DINO + SAM material segmentation
+        # Use silhouette (not bare_wall) so materials are detectable across the
+        # entire facade — SAM element masks are too large and bare_wall ends up
+        # nearly empty, making all material scans return nothing.
         logger.info("Scanning materials (DINO + SAM)...")
         material_prompt = (
             "concrete wall. brick wall. plaster wall. "
@@ -500,21 +506,23 @@ class FacadeAnalyzer:
         )
         raw_material_masks = self._dino_sam_segment(
             img_rgb, material_prompt, CLASS_MAP_MATERIALS,
-            original_size, region_mask=bare_wall,
+            original_size, region_mask=silhouette,
             threshold=params["dino_threshold"],
             text_threshold=params["dino_text_threshold"],
         )
 
         # Z-INDEX stacking: structural → base → finish → decorative
+        # Use silhouette as base coverage — materials cover the whole visible facade.
+        # bare_wall is kept for defect-driven brick augmentation only.
         final_materials = {k: np.zeros(original_size, dtype=bool) for k in CLASS_MAP_MATERIALS}
 
         # Layer 1: Concrete (foundation/base)
-        concrete_m = raw_material_masks.get("concrete", np.zeros(original_size, dtype=bool)) & bare_wall
+        concrete_m = raw_material_masks.get("concrete", np.zeros(original_size, dtype=bool)) & silhouette
         if np.any(concrete_m):
             final_materials["concrete"] = concrete_m
 
-        # Layer 2: Cement plaster (default wall surface)
-        plaster_m = bare_wall & ~final_materials["concrete"]
+        # Layer 2: Cement plaster (default — covers entire silhouette except concrete)
+        plaster_m = silhouette & ~final_materials["concrete"]
         if np.any(plaster_m):
             final_materials["cement_plaster"] = plaster_m
 
@@ -532,17 +540,17 @@ class FacadeAnalyzer:
             final_materials["decorative_plaster"] = deco_m
 
         # Layer 5: Ceramic tile
-        tile_m = raw_material_masks.get("ceramic_tile", np.zeros(original_size, dtype=bool)) & bare_wall
+        tile_m = raw_material_masks.get("ceramic_tile", np.zeros(original_size, dtype=bool)) & silhouette
         if np.any(tile_m):
             final_materials["ceramic_tile"] = tile_m
 
         # Layer 6: Painted surface
-        paint_m = raw_material_masks.get("painted_surface", np.zeros(original_size, dtype=bool)) & bare_wall
+        paint_m = raw_material_masks.get("painted_surface", np.zeros(original_size, dtype=bool)) & silhouette
         if np.any(paint_m):
             final_materials["painted_surface"] = paint_m
 
         # Layer 7: Molding (decorative, top z-index)
-        molding_m = raw_material_masks.get("molding", np.zeros(original_size, dtype=bool)) & bare_wall
+        molding_m = raw_material_masks.get("molding", np.zeros(original_size, dtype=bool)) & silhouette
         if np.any(molding_m):
             final_materials["molding"] = molding_m
 
@@ -656,11 +664,14 @@ class FacadeAnalyzer:
             mask = material_masks.get(mat_name)
             if mask is not None and np.any(mask):
                 segments_canvas[mask] = color
-        # Add element context
+        # Add element context — erode SAM masks so they show only the core of
+        # windows/doors (not the bloated SAM area) and don't hide material colors.
+        elem_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
         for key in ["window", "door", "balcony"]:
             mask = geom_masks.get(key)
             if mask is not None and np.any(mask):
-                segments_canvas[mask] = [40, 40, 40]
+                core = cv2.erode(mask.astype(np.uint8), elem_kernel, iterations=4)
+                segments_canvas[core.astype(bool)] = [40, 40, 40]
         path = os.path.join(output_dir, "segments.jpg")
         cv2.imwrite(path, cv2.cvtColor(segments_canvas, cv2.COLOR_RGB2BGR))
         paths["segments"] = path

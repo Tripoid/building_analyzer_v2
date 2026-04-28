@@ -143,8 +143,6 @@ LABOR_RATES = {
 SCAFFOLDING_COST_PER_FLOOR = 85000  # RUB per floor for full facade access
 SCAFFOLDING_SETUP_HOURS = 8  # per floor
 
-# Tax
-VAT_RATE = 0.20  # 20% НДС in Russia
 MATERIAL_SURPLUS = 0.10  # 10% запас материалов
 
 
@@ -250,9 +248,7 @@ class RepairCalculator:
         materials_total = sum(m.total_cost for m in materials_agg.values())
         labor_total = sum(l.total_cost for l in labor_items)
         total_hours = sum(l.total_hours for l in labor_items) + scaffolding_hours
-        subtotal = materials_total + labor_total + scaffolding_cost
-        vat = subtotal * VAT_RATE
-        grand_total = subtotal + vat
+        grand_total = materials_total + labor_total + scaffolding_cost
 
         return {
             "materials": [
@@ -287,15 +283,12 @@ class RepairCalculator:
                 "materials_total": round(materials_total, 0),
                 "labor_total": round(labor_total, 0),
                 "scaffolding_total": scaffolding_cost,
-                "subtotal": round(subtotal, 0),
-                "vat_rate": VAT_RATE,
-                "vat_amount": round(vat, 0),
                 "grand_total": round(grand_total, 0),
                 "total_work_hours": round(total_hours, 1),
                 "estimated_days": max(1, int(math.ceil(total_hours / 8))),
                 "currency": "₽",
             },
-            "costs_for_flutter": _build_flutter_costs(materials_agg, labor_items, scaffolding_cost, vat),
+            "costs_for_flutter": _build_flutter_costs(materials_agg, labor_items, scaffolding_cost),
         }
 
 
@@ -303,7 +296,6 @@ def _build_flutter_costs(
     materials: Dict[str, RepairMaterial],
     labor: List[RepairWork],
     scaffolding: float,
-    vat: float,
 ) -> List[dict]:
     """Build cost items in format compatible with Flutter CostBreakdownCard."""
     items = []
@@ -334,15 +326,6 @@ def _build_flutter_costs(
             "category": "Леса и оборудование",
             "description": "Монтаж/демонтаж строительных лесов",
             "cost": round(scaffolding, 0),
-            "unit": "₽",
-        })
-
-    # VAT
-    if vat > 0:
-        items.append({
-            "category": "НДС (20%)",
-            "description": "Налог на добавленную стоимость",
-            "cost": round(vat, 0),
             "unit": "₽",
         })
 
