@@ -26,9 +26,7 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════
 
 GEOMETRY_PROMPT = (
-    "window pane. entrance door. building facade wall. "
-    "balcony terrace. roof rooftop. cornice molding decoration. "
-    "drainpipe pipe. air conditioner unit."
+    "window. door. wall. balcony. roof. molding. pipe. air conditioner."
 )
 
 CLASS_MAP_GEOMETRY = {
@@ -43,59 +41,58 @@ CLASS_MAP_GEOMETRY = {
 }
 
 WALL_DEFECT_PROMPTS = [
-    "deep structural wall crack fracture",
-    "damaged peeling plaster surface delamination",
-    "exposed red brick from damaged crumbling wall",
-    "water damage moisture stain on wall",
-    "rust discoloration corrosion stain on facade",
-    "green moss biological growth on wall surface",
-    "white salt efflorescence deposit on wall",
-    "spalling crumbling concrete surface damage",
+    "wall crack",
+    "peeling plaster",
+    "exposed brick",
+    "water stain",
+    "rust stain",
+    "moss",
+    "efflorescence",
+    "spalling concrete",
 ]
 
 CLASS_MAP_WALL_DEFECTS = {
-    "crack": ["crack", "fracture"],
-    "peeling": ["peeling plaster", "delamination"],
-    "exposed_brick": ["exposed red brick", "crumbling wall"],
-    "water_damage": ["water damage", "moisture stain"],
-    "rust": ["rust", "corrosion"],
-    "moss": ["moss", "biological growth"],
-    "efflorescence": ["salt efflorescence", "deposit"],
-    "spalling": ["spalling", "crumbling concrete"],
+    "crack": ["crack"],
+    "peeling": ["peeling", "plaster"],
+    "exposed_brick": ["exposed brick", "brick"],
+    "water_damage": ["water stain", "stain"],
+    "rust": ["rust"],
+    "moss": ["moss"],
+    "efflorescence": ["efflorescence"],
+    "spalling": ["spalling", "concrete"],
 }
 
 ELEMENT_DEFECT_PROMPTS = [
-    "broken shattered cracked window glass pane",
-    "damaged rotten wooden door frame surface",
-    "rusty corroded metal element railing",
-    "damaged cracked balcony railing surface",
+    "broken window glass",
+    "damaged wooden door",
+    "rusty metal railing",
+    "cracked balcony railing",
 ]
 
 CLASS_MAP_ELEMENT_DEFECTS = {
-    "broken_glass": ["broken", "shattered", "cracked window"],
-    "damaged_wood": ["damaged", "rotten wooden"],
-    "rusty_metal": ["rusty", "corroded metal"],
-    "damaged_railing": ["damaged", "cracked balcony"],
+    "broken_glass": ["broken", "glass"],
+    "damaged_wood": ["damaged", "wooden", "door"],
+    "rusty_metal": ["rusty", "metal"],
+    "damaged_railing": ["cracked", "railing"],
 }
 
 MATERIAL_PROMPTS = [
-    "grey concrete stone wall base foundation",
-    "terracotta red brick masonry wall surface",
-    "plain smooth cement plaster wall facade",
-    "decorative textured plaster facade finish",
-    "architectural molding cornice decoration ornament",
-    "ceramic tile cladding facade surface",
-    "painted surface facade wall finish coating",
+    "concrete wall",
+    "brick wall",
+    "plaster wall",
+    "molding cornice",
+    "ceramic tile",
+    "painted wall",
 ]
 
 CLASS_MAP_MATERIALS = {
-    "concrete": ["grey concrete stone"],
-    "brick": ["terracotta red brick"],
-    "cement_plaster": ["cement plaster"],
-    "decorative_plaster": ["decorative textured plaster"],
-    "molding": ["molding", "cornice", "decoration"],
-    "ceramic_tile": ["ceramic tile"],
-    "painted_surface": ["painted surface"],
+    "concrete": ["concrete"],
+    "brick": ["brick"],
+    "cement_plaster": ["plaster"],
+    "decorative_plaster": ["textured plaster"],
+    "molding": ["molding", "cornice"],
+    "ceramic_tile": ["ceramic", "tile"],
+    "painted_surface": ["painted"],
 }
 
 COLORS_GEOMETRY = {
@@ -233,11 +230,11 @@ def _adaptive_params(image_shape: Tuple[int, int]) -> dict:
     h, w = image_shape[:2]
     total_px = h * w
     if total_px > 2_000_000:  # >2MP
-        return {"points_per_side": 48, "min_mask_area": 500, "dino_threshold": 0.20, "dino_text_threshold": 0.20}
+        return {"points_per_side": 48, "min_mask_area": 500, "dino_threshold": 0.10, "dino_text_threshold": 0.10}
     elif total_px > 800_000:  # >0.8MP
-        return {"points_per_side": 32, "min_mask_area": 300, "dino_threshold": 0.25, "dino_text_threshold": 0.25}
+        return {"points_per_side": 32, "min_mask_area": 300, "dino_threshold": 0.12, "dino_text_threshold": 0.12}
     else:
-        return {"points_per_side": 16, "min_mask_area": 150, "dino_threshold": 0.30, "dino_text_threshold": 0.30}
+        return {"points_per_side": 16, "min_mask_area": 150, "dino_threshold": 0.12, "dino_text_threshold": 0.12}
 
 
 class FacadeAnalyzer:
@@ -415,9 +412,8 @@ class FacadeAnalyzer:
         # 3. Wall defects via Grounding DINO + SAM
         logger.info("Scanning wall defects (DINO + SAM)...")
         wall_defect_prompt = (
-            "crack in wall. peeling paint on wall. exposed brick area. "
-            "water damage stain on wall. rust stain on surface. "
-            "green moss on wall. white salt efflorescence. concrete spalling damage."
+            "wall crack. peeling plaster. exposed brick. "
+            "water stain. rust stain. moss. efflorescence. spalling concrete."
         )
         wall_defect_masks = self._dino_sam_segment(
             img_rgb, wall_defect_prompt, CLASS_MAP_WALL_DEFECTS,
@@ -429,8 +425,8 @@ class FacadeAnalyzer:
         # 4. Element defects via DINO + SAM
         logger.info("Scanning element defects (DINO + SAM)...")
         element_defect_prompt = (
-            "broken glass in window. damaged wooden door. "
-            "rusty metal element. damaged balcony railing."
+            "broken window glass. damaged wooden door. "
+            "rusty metal railing. cracked balcony railing."
         )
         element_defect_masks = self._dino_sam_segment(
             img_rgb, element_defect_prompt, CLASS_MAP_ELEMENT_DEFECTS,
@@ -483,10 +479,8 @@ class FacadeAnalyzer:
         # DINO + SAM material segmentation
         logger.info("Scanning materials (DINO + SAM)...")
         material_prompt = (
-            "grey concrete stone wall. terracotta red brick masonry wall. "
-            "plain smooth cement plaster wall. decorative textured plaster facade. "
-            "architectural molding cornice decoration. ceramic tile cladding facade. "
-            "painted surface wall coating."
+            "concrete wall. brick wall. plaster wall. "
+            "molding cornice. ceramic tile. painted wall."
         )
         raw_material_masks = self._dino_sam_segment(
             img_rgb, material_prompt, CLASS_MAP_MATERIALS,
