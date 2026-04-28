@@ -12,8 +12,11 @@ torchvision>=0.15.0
 transformers>=4.40.0
 accelerate>=0.30.0
 
-# Segmentation (HuggingFace: Grounding DINO + SAM)
+# Segmentation
 rembg[cpu]>=2.0.50
+# CLIPSeg — texture/material heatmaps (CIDAS/clipseg-rd64-refined via HuggingFace)
+# Included in transformers>=4.18; no extra install needed.
+# SAM2 — installed separately: pip install git+https://github.com/facebookresearch/sam2.git
 
 # Inpainting — LaMa (Large Mask Inpainting).
 # Replaces Stable Diffusion: faster, no 512-px limit, preserves facade textures.

@@ -1,10 +1,16 @@
 """
 FacadeAnalyzer — ML Pipeline for building facade analysis.
 
-Step 1: Grounding DINO + SAM → geometry detection (windows, doors, balconies)
-Step 2: rembg + Grounding DINO + SAM → wall and element defect detection
-Step 3: Grounding DINO + SAM → material identification with z-index stacking
+Step 1: Grounding DINO + SAM2 → geometry detection (windows, doors, balconies)
+Step 2: rembg + Grounding DINO + SAM2 → wall and element defect detection
+Step 3: CLIPSeg + SAM2 AMG → material identification (texture fusion approach)
 Step 4: Wall layer classification based on defect and material overlap
+
+Material detection uses the notebook-proven CLIPSeg+AMG fusion:
+  CLIPSeg produces per-pixel probability heatmaps for each material/texture.
+  SAM2 AutoMaskGenerator cuts the image into physically coherent segments.
+  Each segment is assigned to the material with the highest average CLIPSeg score.
+  This outperforms DINO (object detector) for distributed surface textures.
 """
 
 import cv2
@@ -76,14 +82,26 @@ CLASS_MAP_ELEMENT_DEFECTS = {
     "damaged_railing": ["cracked", "railing"],
 }
 
-MATERIAL_PROMPTS = [
-    "concrete wall",
-    "brick wall",
-    "plaster wall",
-    "molding cornice",
-    "ceramic tile",
-    "painted wall",
+# CLIPSeg prompts for material detection (CLIPSeg+AMG fusion approach)
+# Index order matches MATERIAL_CLIPSEG_IDX_MAP below.
+MATERIAL_PROMPTS_CLIPSEG = [
+    "painted plaster smooth wall facade texture",   # 0
+    "exposed bare red brick masonry wall texture",  # 1
+    "grey rough concrete stone surface texture",    # 2
+    "decorative white plaster molding cornice",     # 3
+    "glazed ceramic tile surface texture",          # 4
 ]
+MATERIAL_CLIPSEG_IDX_MAP = {
+    0: "cement_plaster",
+    1: "brick",
+    2: "concrete",
+    3: "molding",
+    4: "ceramic_tile",
+}
+MATERIAL_CLIPSEG_CONFIDENCE = 0.28   # min CLIPSeg score to assign a material
+
+# Legacy DINO prompts kept for reference (no longer used for materials)
+MATERIAL_PROMPTS = MATERIAL_PROMPTS_CLIPSEG
 
 CLASS_MAP_MATERIALS = {
     "concrete": ["concrete"],
@@ -94,6 +112,10 @@ CLASS_MAP_MATERIALS = {
     "ceramic_tile": ["ceramic", "tile"],
     "painted_surface": ["painted"],
 }
+
+# Defects that can be inpainted (surface-level, LaMa can reproduce surrounding texture).
+# Structural defects (exposed_brick, spalling) are excluded — too large, LaMa produces blobs.
+RESTORABLE_DEFECTS = {"crack", "water_damage", "efflorescence", "moss", "rust"}
 
 COLORS_GEOMETRY = {
     "window": [0, 255, 255],
@@ -269,6 +291,9 @@ class FacadeAnalyzer:
         self._dino_processor = None
         self._dino_model = None
         self._sam2_predictor = None
+        self._sam2_amg = None
+        self._clipseg_processor = None
+        self._clipseg_model = None
 
     def load_models(self):
         """Load and cache all ML models. Call once at startup."""
@@ -289,8 +314,23 @@ class FacadeAnalyzer:
 
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
+        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
         sam2_base = build_sam2("sam2_hiera_s.yaml", weights_path, device=self.device)
         self._sam2_predictor = SAM2ImagePredictor(sam2_base)
+        self._sam2_amg = SAM2AutomaticMaskGenerator(
+            model=sam2_base,
+            points_per_side=32,
+            pred_iou_thresh=0.80,
+            stability_score_thresh=0.80,
+            min_mask_region_area=300,
+        )
+
+        logger.info("Loading CLIPSeg (material texture heatmaps)...")
+        from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
+        self._clipseg_processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
+        self._clipseg_model = CLIPSegForImageSegmentation.from_pretrained(
+            "CIDAS/clipseg-rd64-refined"
+        ).to(self.device)
 
         self.models_loaded = True
         logger.info("All models loaded successfully.")
@@ -494,84 +534,91 @@ class FacadeAnalyzer:
         self, img_rgb: np.ndarray, geom_masks: Dict[str, np.ndarray],
         wall_defect_masks: Optional[Dict[str, np.ndarray]] = None
     ) -> Dict[str, np.ndarray]:
-        """Identify facade materials using Grounding DINO + SAM with z-index stacking."""
+        """
+        Identify facade materials using CLIPSeg heatmaps + SAM2 AMG fusion.
+
+        CLIPSeg produces per-pixel probability maps for each material texture.
+        SAM2 AMG cuts the image into physically coherent segments.
+        Each segment is assigned to the material with the highest average score.
+        Unclassified silhouette pixels default to cement_plaster.
+        """
         from rembg import remove
         original_size = img_rgb.shape[:2]
-        params = _adaptive_params(img_rgb.shape)
 
-        # Rebuild bare wall
+        # Rebuild silhouette
         rgba = remove(img_rgb)
         silhouette = rgba[:, :, 3] > 128
-        elements = np.zeros(original_size, dtype=bool)
-        for key in ["window", "door", "balcony", "roof", "molding", "pipe", "ac_unit"]:
-            if key in geom_masks:
-                elements |= geom_masks[key]
-        bare_wall = silhouette & ~elements
 
-        # DINO + SAM material segmentation
-        # Use silhouette (not bare_wall) so materials are detectable across the
-        # entire facade — SAM element masks are too large and bare_wall ends up
-        # nearly empty, making all material scans return nothing.
-        logger.info("Scanning materials (DINO + SAM)...")
-        material_prompt = (
-            "concrete wall. brick wall. plaster wall. "
-            "molding cornice. ceramic tile. painted wall."
-        )
-        raw_material_masks = self._dino_sam_segment(
-            img_rgb, material_prompt, CLASS_MAP_MATERIALS,
-            original_size, region_mask=silhouette,
-            threshold=params["dino_threshold"],
-            text_threshold=params["dino_text_threshold"],
-        )
+        # ── 1. CLIPSeg heatmaps ───────────────────────────────────────────────
+        logger.info("CLIPSeg material heatmaps…")
+        clipseg_probs = self._get_clipseg_probs(img_rgb, MATERIAL_PROMPTS_CLIPSEG, original_size)
 
-        # Z-INDEX stacking: structural → base → finish → decorative
-        # Use silhouette as base coverage — materials cover the whole visible facade.
-        # bare_wall is kept for defect-driven brick augmentation only.
-        final_materials = {k: np.zeros(original_size, dtype=bool) for k in CLASS_MAP_MATERIALS}
+        # ── 2. SAM2 AMG — physical segments ───────────────────────────────────
+        logger.info("SAM2 AMG auto-segmentation…")
+        with torch.no_grad():
+            amg_masks = self._sam2_amg.generate(img_rgb)
+        logger.info(f"AMG produced {len(amg_masks)} segments")
 
-        # Layer 1: Concrete (foundation/base)
-        concrete_m = raw_material_masks.get("concrete", np.zeros(original_size, dtype=bool)) & silhouette
-        if np.any(concrete_m):
-            final_materials["concrete"] = concrete_m
+        # ── 3. Fusion: assign each segment to its dominant material ───────────
+        final_materials: Dict[str, np.ndarray] = {
+            k: np.zeros(original_size, dtype=bool) for k in CLASS_MAP_MATERIALS
+        }
+        classified = np.zeros(original_size, dtype=bool)
 
-        # Layer 2: Cement plaster (default — covers entire silhouette except concrete)
-        plaster_m = silhouette & ~final_materials["concrete"]
-        if np.any(plaster_m):
-            final_materials["cement_plaster"] = plaster_m
+        for ann in amg_masks:
+            seg: np.ndarray = ann["segmentation"]
 
-        # Layer 3: Brick (exposed, overrides plaster)
-        brick_m = raw_material_masks.get("brick", np.zeros(original_size, dtype=bool))
-        if wall_defect_masks and "exposed_brick" in wall_defect_masks:
-            brick_m |= wall_defect_masks["exposed_brick"]
-        brick_m &= plaster_m
-        if np.any(brick_m):
-            final_materials["brick"] = brick_m
+            # Skip segments fully outside the building silhouette
+            if not np.any(seg & silhouette):
+                continue
 
-        # Layer 4: Decorative plaster (overrides cement plaster)
-        deco_m = raw_material_masks.get("decorative_plaster", np.zeros(original_size, dtype=bool)) & plaster_m
-        if np.any(deco_m):
-            final_materials["decorative_plaster"] = deco_m
+            valid = seg & silhouette
+            scores = [float(clipseg_probs[i][seg].mean()) for i in range(len(MATERIAL_PROMPTS_CLIPSEG))]
+            best_idx = int(np.argmax(scores))
 
-        # Layer 5: Ceramic tile
-        tile_m = raw_material_masks.get("ceramic_tile", np.zeros(original_size, dtype=bool)) & silhouette
-        if np.any(tile_m):
-            final_materials["ceramic_tile"] = tile_m
+            if scores[best_idx] >= MATERIAL_CLIPSEG_CONFIDENCE:
+                mat_key = MATERIAL_CLIPSEG_IDX_MAP.get(best_idx)
+                if mat_key and mat_key in final_materials:
+                    final_materials[mat_key] |= valid
+                    classified |= valid
 
-        # Layer 6: Painted surface
-        paint_m = raw_material_masks.get("painted_surface", np.zeros(original_size, dtype=bool)) & silhouette
-        if np.any(paint_m):
-            final_materials["painted_surface"] = paint_m
+        # ── 4. Default: unclassified silhouette pixels → cement_plaster ───────
+        final_materials["cement_plaster"] |= (silhouette & ~classified)
 
-        # Layer 7: Molding (decorative, top z-index)
-        molding_m = raw_material_masks.get("molding", np.zeros(original_size, dtype=bool)) & silhouette
-        if np.any(molding_m):
-            final_materials["molding"] = molding_m
+        # ── 5. Augment brick from exposed_brick defect mask ───────────────────
+        if wall_defect_masks:
+            exposed = wall_defect_masks.get("exposed_brick", np.zeros(original_size, dtype=bool))
+            if np.any(exposed):
+                # Move exposed areas from plaster → brick
+                final_materials["cement_plaster"] &= ~exposed
+                final_materials["brick"] |= (exposed & silhouette)
 
         torch.cuda.empty_cache()
         gc.collect()
 
-        logger.info("Material analysis complete.")
+        logger.info("Material analysis complete (CLIPSeg+AMG).")
         return final_materials
+
+    def _get_clipseg_probs(
+        self, img_rgb: np.ndarray, prompts: List[str], original_size: Tuple[int, int]
+    ) -> np.ndarray:
+        """Run CLIPSeg and return per-prompt probability maps, shape (N, H, W)."""
+        image = Image.fromarray(img_rgb)
+        inputs = self._clipseg_processor(
+            text=prompts,
+            images=[image] * len(prompts),
+            padding=True,
+            return_tensors="pt",
+        ).to(self.device)
+        with torch.no_grad():
+            outputs = self._clipseg_model(**inputs)
+        probs = torch.nn.functional.interpolate(
+            outputs.logits.unsqueeze(1),
+            size=original_size,
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(1)
+        return torch.sigmoid(probs).cpu().numpy()  # (N, H, W)
 
     # ─────────────────────────────────────────────────
     # STEP 4: Wall Layer Classification
@@ -771,10 +818,12 @@ class FacadeAnalyzer:
             from restoration import restore_facade
             restoration_path = os.path.join(output_dir, "restoration.jpg")
 
-            # Only restore wall surface defects — element defects (broken glass,
-            # damaged railings) are structural and must not be inpainted over.
+            # Only restore surface-level defects — LaMa works well for small/medium
+            # localised damage (cracks, stains, moss). Skip structural defects like
+            # exposed_brick/spalling which cover large areas and cause blurry blobs.
             defect_masks_for_restore = {
-                k: v for k, v in wall_defect_masks.items() if np.any(v)
+                k: v for k, v in wall_defect_masks.items()
+                if k in RESTORABLE_DEFECTS and np.any(v)
             }
 
             restore_facade(
