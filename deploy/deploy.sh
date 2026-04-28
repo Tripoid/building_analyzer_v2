@@ -1,21 +1,21 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════
 # Facade Analyzer — SSH Deployment Script
-# Порты: 44025 → 9000 (приложение)
+# Порты: 8080 → 20090 (qudata.ai маппинг)
 # Поддержка: systemd / Docker (без systemd)
 # ═══════════════════════════════════════════════════════
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-APP_PORT=9000
+APP_PORT=8080
 
 echo "╔═══════════════════════════════════════════════════╗"
 echo "║  🏗️  Facade Analyzer — Deployment                ║"
 echo "╚═══════════════════════════════════════════════════╝"
 echo ""
 echo "Project dir: $PROJECT_DIR"
-echo "App port:    $APP_PORT (external: 44025)"
+echo "App port:    $APP_PORT (external: 20090)"
 
 # ── 1. System dependencies ──
 echo ""
@@ -93,14 +93,14 @@ else
 #!/bin/bash
 cd "$(dirname "$0")/backend"
 source venv/bin/activate
-exec python -m uvicorn server:app --host 0.0.0.0 --port 9000 --workers 1
+exec python -m uvicorn server:app --host 0.0.0.0 --port 8080 --workers 1
 STARTEOF
     chmod +x "$PROJECT_DIR/start.sh"
 
     # Create a stop script
     cat > "$PROJECT_DIR/stop.sh" << 'STOPEOF'
 #!/bin/bash
-pkill -f "uvicorn server:app.*--port 9000" 2>/dev/null && echo "Server stopped" || echo "Server was not running"
+pkill -f "uvicorn server:app.*--port 8080" 2>/dev/null && echo "Server stopped" || echo "Server was not running"
 STOPEOF
     chmod +x "$PROJECT_DIR/stop.sh"
 
@@ -130,7 +130,7 @@ echo "║  🚀 DEPLOYMENT COMPLETE!                         ║"
 echo "╠═══════════════════════════════════════════════════╣"
 echo "║                                                   ║"
 echo "║  Local:    http://localhost:$APP_PORT              "
-echo "║  External: http://SERVER_IP:44025                  "
+echo "║  External: http://SERVER_IP:20090"
 echo "║  API:      http://localhost:$APP_PORT/api/health   "
 echo "║  Docs:     http://localhost:$APP_PORT/docs         "
 echo "║                                                   ║"
