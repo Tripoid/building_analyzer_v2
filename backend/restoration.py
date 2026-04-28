@@ -102,28 +102,36 @@ def restore_facade(
         cv2.imwrite(output_path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
         return output_path
 
-    # ── 4. Large mask → LaMa ─────────────────────────────────────────────────
-    logger.info("Large mask — using LaMa inpainting…")
-    lama = _load_lama()
+    # ── 4. Large mask → LaMa (OpenCV TELEA if LaMa unavailable) ─────────────
+    bgr_orig = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
-    pil_image = Image.fromarray(img_rgb)
-    pil_mask  = Image.fromarray(dilated)        # L or RGB — SimpleLama handles both
+    try:
+        logger.info("Large mask — using LaMa inpainting…")
+        lama = _load_lama()
 
-    result_pil = lama(pil_image, pil_mask)
-    result_np  = np.array(result_pil)           # uint8 RGB, same size as input
+        pil_image = Image.fromarray(img_rgb)
+        pil_mask  = Image.fromarray(dilated)
 
-    # ── 5. Feathered composite — keep untouched areas pixel-perfect ──────────
-    feather = cv2.GaussianBlur(dilated.astype(np.float32), (15, 15), 0)
-    alpha   = np.clip(feather / 255.0, 0.0, 1.0)
-    alpha3  = np.stack([alpha] * 3, axis=-1)
+        result_pil = lama(pil_image, pil_mask)
+        result_np  = np.array(result_pil)
 
-    final = (
-        img_rgb.astype(np.float32)    * (1.0 - alpha3) +
-        result_np.astype(np.float32)  * alpha3
-    ).clip(0, 255).astype(np.uint8)
+        # ── 5. Feathered composite ───────────────────────────────────────────
+        feather = cv2.GaussianBlur(dilated.astype(np.float32), (15, 15), 0)
+        alpha   = np.clip(feather / 255.0, 0.0, 1.0)
+        alpha3  = np.stack([alpha] * 3, axis=-1)
 
-    cv2.imwrite(output_path, cv2.cvtColor(final, cv2.COLOR_RGB2BGR))
-    logger.info(f"LaMa restoration saved → {output_path}")
+        final = (
+            img_rgb.astype(np.float32)   * (1.0 - alpha3) +
+            result_np.astype(np.float32) * alpha3
+        ).clip(0, 255).astype(np.uint8)
+
+        cv2.imwrite(output_path, cv2.cvtColor(final, cv2.COLOR_RGB2BGR))
+        logger.info(f"LaMa restoration saved → {output_path}")
+
+    except Exception as e:
+        logger.warning(f"LaMa unavailable ({e}) — falling back to OpenCV TELEA.")
+        restored = cv2.inpaint(bgr_orig, dilated, inpaintRadius=21, flags=cv2.INPAINT_TELEA)
+        cv2.imwrite(output_path, restored)
 
     gc.collect()
     return output_path

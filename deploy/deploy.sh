@@ -23,7 +23,7 @@ echo "▶ [1/5] Installing system dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 # Core tools
-apt-get install -y -qq python3 python3-pip python3-venv python3-dev curl wget git
+apt-get install -y -qq python3 python3-pip python3-venv python3-dev curl wget git aria2
 # OpenCV runtime deps (Ubuntu 24.04 Noble — libgl1 replaces libgl1-mesa-glx)
 apt-get install -y -qq \
     libgl1 libglib2.0-0t64 libsm6 libxext6 libxrender1 \
@@ -48,12 +48,22 @@ python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
-pip install git+https://github.com/facebookresearch/sam2.git -q 2>/dev/null || echo "  ⚠️ SAM2 install skipped (optional)"
 
-# Download SAM2 weights if not present
+# SAM2 — required for precise mask segmentation
+echo "  Installing SAM2..."
+pip install git+https://github.com/facebookresearch/sam2.git -q
+echo "  ✅ SAM2 installed"
+
+# Download SAM2 weights via aria2c (16 threads) or wget fallback
 if [ ! -f sam2_hiera_small.pt ]; then
-    echo "  Downloading SAM2 weights..."
-    wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt || echo "  ⚠️ SAM2 weights download failed (optional)"
+    echo "  Downloading SAM2 weights (~190 MB)..."
+    SAM2_URL="https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt"
+    if command -v aria2c &> /dev/null; then
+        aria2c -x 16 -s 16 -k 1M "$SAM2_URL" -o sam2_hiera_small.pt
+    else
+        wget -q "$SAM2_URL" -O sam2_hiera_small.pt
+    fi
+    echo "  ✅ SAM2 weights downloaded"
 fi
 echo "  ✅ Python environment ready"
 

@@ -225,6 +225,26 @@ def _get_base_class(raw_label: str, class_map: dict) -> Optional[str]:
     return None
 
 
+def _download_sam2_weights(dest_path: str) -> None:
+    """Download SAM2 weights using aria2c (16 threads) or urllib fallback."""
+    import subprocess, urllib.request
+    url = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt"
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    try:
+        if subprocess.run(["which", "aria2c"], capture_output=True).returncode == 0:
+            logger.info("Downloading SAM2 weights via aria2c (16 threads)…")
+            subprocess.run(
+                ["aria2c", "-x", "16", "-s", "16", "-k", "1M", url, "-o", dest_path],
+                check=True
+            )
+        else:
+            logger.info("Downloading SAM2 weights via urllib (single thread)…")
+            urllib.request.urlretrieve(url, dest_path)
+        logger.info("SAM2 weights downloaded.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to download SAM2 weights: {e}") from e
+
+
 def _adaptive_params(image_shape: Tuple[int, int]) -> dict:
     """Return adaptive ML parameters based on image resolution."""
     h, w = image_shape[:2]
@@ -248,8 +268,7 @@ class FacadeAnalyzer:
         self.models_loaded = False
         self._dino_processor = None
         self._dino_model = None
-        self._sam_processor = None
-        self._sam_model = None
+        self._sam2_predictor = None
 
     def load_models(self):
         """Load and cache all ML models. Call once at startup."""
@@ -263,10 +282,15 @@ class FacadeAnalyzer:
             "IDEA-Research/grounding-dino-base"
         ).to(self.device)
 
-        logger.info("Loading SAM (vit-base)...")
-        from transformers import SamModel, SamProcessor
-        self._sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
-        self._sam_model = SamModel.from_pretrained("facebook/sam-vit-base").to(self.device)
+        logger.info("Loading SAM2 (hiera_small)...")
+        weights_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sam2_hiera_small.pt")
+        if not os.path.exists(weights_path):
+            _download_sam2_weights(weights_path)
+
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+        sam2_base = build_sam2("sam2_hiera_s.yaml", weights_path, device=self.device)
+        self._sam2_predictor = SAM2ImagePredictor(sam2_base)
 
         self.models_loaded = True
         logger.info("All models loaded successfully.")
@@ -350,32 +374,21 @@ class FacadeAnalyzer:
             scores = raw_scores[keep].numpy()
             labels = [raw_labels[i] for i in keep]
 
-            # SAM segmentation
+            # SAM2 segmentation — one box at a time for tight, precise masks
             if len(boxes) > 0:
-                sam_inputs = self._sam_processor(
-                    image, input_boxes=[boxes.tolist()], return_tensors="pt"
-                ).to(self.device)
-
-                with torch.no_grad():
-                    sam_outputs = self._sam_model(**sam_inputs)
-
-                masks = self._sam_processor.image_processor.post_process_masks(
-                    sam_outputs.pred_masks.cpu(),
-                    sam_inputs["original_sizes"].cpu(),
-                    sam_inputs["reshaped_input_sizes"].cpu()
-                )
-                best_masks = masks[0][:, 0, :, :].numpy()
-
+                self._sam2_predictor.set_image(img_rgb)
                 areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
                 sorted_indices = np.argsort(areas)[::-1]
 
                 for i in sorted_indices:
                     base_class = _get_base_class(str(labels[i]), CLASS_MAP_GEOMETRY) or "unknown"
-                    mask = best_masks[i] if len(best_masks) > i else None
-
-                    if mask is not None and base_class in geom_masks:
+                    with torch.no_grad():
+                        pred_masks, _, _ = self._sam2_predictor.predict(
+                            box=boxes[i], multimask_output=False
+                        )
+                    mask = pred_masks[0].astype(bool)
+                    if base_class in geom_masks:
                         geom_masks[base_class] |= mask
-
                     detections.append({
                         "class": base_class,
                         "score": float(scores[i]),
@@ -977,26 +990,17 @@ class FacadeAnalyzer:
         boxes = raw_boxes[keep].numpy()
         labels = [raw_labels[i] for i in keep]
 
-        # SAM segmentation on detected boxes
-        sam_inputs = self._sam_processor(
-            image, input_boxes=[boxes.tolist()], return_tensors="pt"
-        ).to(self.device)
-
-        with torch.no_grad():
-            sam_outputs = self._sam_model(**sam_inputs)
-
-        masks = self._sam_processor.image_processor.post_process_masks(
-            sam_outputs.pred_masks.cpu(),
-            sam_inputs["original_sizes"].cpu(),
-            sam_inputs["reshaped_input_sizes"].cpu()
-        )
-        best_masks = masks[0][:, 0, :, :].numpy()
-
-        for i, label in enumerate(labels):
+        # SAM2 segmentation — per-box for tight masks that stay inside detected regions
+        self._sam2_predictor.set_image(img_rgb)
+        for box, label in zip(boxes, labels):
             base_class = _get_base_class(str(label), class_map)
-            if base_class is None or i >= len(best_masks):
+            if base_class is None:
                 continue
-            final_mask = best_masks[i].astype(bool)
+            with torch.no_grad():
+                pred_masks, _, _ = self._sam2_predictor.predict(
+                    box=box, multimask_output=False
+                )
+            final_mask = pred_masks[0].astype(bool)
             if region_mask is not None:
                 final_mask &= region_mask
             if np.any(final_mask):
