@@ -117,7 +117,7 @@ async def analyze_image(
             "total_area_px": result["total_area_px"],
             "damaged_area_px": result["damaged_area_px"],
             "damaged_area_m2": round(
-                (result["damaged_area_px"] / result["total_area_px"] * total_area_m2)
+                min(result["damaged_area_px"] / result["total_area_px"], 1.0) * total_area_m2
                 if result["total_area_px"] > 0 else 0, 1
             ),
             "damages": result["damages"],

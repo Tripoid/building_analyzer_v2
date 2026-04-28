@@ -11,7 +11,7 @@ const IMAGE_META = [
   { type: 'defects', title: 'Выделенные дефекты', desc: 'Обнаружение и маркировка дефектов' },
   { type: 'segments', title: 'Сегментация материалов', desc: 'Разбивка по типам материалов' },
   { type: 'overlay', title: 'Зоны ремонта', desc: 'Области для первоочередного ремонта' },
-  { type: 'restoration', title: 'Реставрация фасада', desc: 'ИИ-визуализация восстановленного фасада (Stable Diffusion)' },
+  { type: 'restoration', title: 'Реставрация фасада', desc: 'ИИ-визуализация восстановленного фасада (LaMa Inpainting)' },
 ]
 const TABS = ['Снимки', 'Слои', 'Дефекты', 'Материалы', 'Смета', 'Ведомость']
 
@@ -97,7 +97,7 @@ export default function ResultsPage() {
               </div>
             )}
             <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:4 }}>Площадь: {result.total_area_m2} м²</div>
-            <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:4 }}>Повреждено: {result.damaged_area_m2} м² ({result.total_area_m2 > 0 ? Math.round(result.damaged_area_m2/result.total_area_m2*100) : 0}%)</div>
+            <div style={{ fontSize:13,color:'var(--text-secondary)',marginTop:4 }}>Повреждено: {result.damaged_area_m2} м² ({result.total_area_m2 > 0 ? Math.min(100, Math.round(result.damaged_area_m2/result.total_area_m2*100)) : 0}%)</div>
           </div>
         </div>
       </div>
@@ -182,7 +182,7 @@ function ImagesTab({ result, imgIdx, setImgIdx }) {
         <StatCard icon="🖼️" value={String(IMAGE_META.length)} label={'Обработанных\nснимков'} color="var(--info)"/>
         <StatCard icon="🐛" value={String(result.damages?.length || 0)} label={'Типов\nдефектов'} color="var(--danger)"/>
         <StatCard icon="📐" value={`${result.total_area_m2} м²`} label={'Общая\nплощадь'} color="var(--success)"/>
-        <StatCard icon="⚠️" value={`${Math.round((result.damaged_area_m2 || 0)/(result.total_area_m2 || 1)*100)}%`} label={'Площадь\nповреждений'} color="var(--warning)"/>
+        <StatCard icon="⚠️" value={`${Math.min(100, Math.round((result.damaged_area_m2 || 0)/(result.total_area_m2 || 1)*100))}%`} label={'Площадь\nповреждений'} color="var(--warning)"/>
       </div>
     </div>
   )

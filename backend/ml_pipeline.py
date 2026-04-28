@@ -230,11 +230,11 @@ def _adaptive_params(image_shape: Tuple[int, int]) -> dict:
     h, w = image_shape[:2]
     total_px = h * w
     if total_px > 2_000_000:  # >2MP
-        return {"points_per_side": 48, "min_mask_area": 500, "dino_threshold": 0.10, "dino_text_threshold": 0.10}
+        return {"points_per_side": 48, "min_mask_area": 500, "dino_threshold": 0.18, "dino_text_threshold": 0.18}
     elif total_px > 800_000:  # >0.8MP
-        return {"points_per_side": 32, "min_mask_area": 300, "dino_threshold": 0.12, "dino_text_threshold": 0.12}
+        return {"points_per_side": 32, "min_mask_area": 300, "dino_threshold": 0.18, "dino_text_threshold": 0.18}
     else:
-        return {"points_per_side": 16, "min_mask_area": 150, "dino_threshold": 0.12, "dino_text_threshold": 0.12}
+        return {"points_per_side": 16, "min_mask_area": 150, "dino_threshold": 0.18, "dino_text_threshold": 0.18}
 
 
 class FacadeAnalyzer:
@@ -800,12 +800,18 @@ class FacadeAnalyzer:
         # Compile damage statistics
         damages = []
         all_defect_masks = {**wall_defect_masks, **element_defect_masks}
-        total_damaged_px = 0
+
+        # Build union mask to avoid double-counting overlapping defect pixels
+        combined_damage = np.zeros(original_size, dtype=bool)
+        for mask in all_defect_masks.values():
+            if np.any(mask):
+                combined_damage |= mask
+        total_damaged_px = int(combined_damage.sum())
+
         for dtype, mask in all_defect_masks.items():
             if not np.any(mask):
                 continue
             area_px = int(mask.sum())
-            total_damaged_px += area_px
             pct = (area_px / building_area_px * 100) if building_area_px > 0 else 0
 
             # Severity classification
@@ -862,9 +868,9 @@ class FacadeAnalyzer:
             })
         materials.sort(key=lambda m: m["percentage"], reverse=True)
 
-        # Overall score (0-100)
-        damage_ratio = total_damaged_px / building_area_px if building_area_px > 0 else 0
-        overall_score = max(0, min(100, round(100 * (1 - damage_ratio * 2.5), 1)))
+        # Overall score (0-100): 0% damage → 100 pts, 50%+ damage → 0 pts
+        damage_ratio = min(total_damaged_px / building_area_px, 1.0) if building_area_px > 0 else 0
+        overall_score = max(0, min(100, round(100 * (1 - damage_ratio * 2), 1)))
 
         if overall_score >= 80:
             condition = "good"
@@ -880,7 +886,8 @@ class FacadeAnalyzer:
             "overall_score": overall_score,
             "overall_condition": CONDITION_LABELS["ru"][condition],
             "total_area_px": building_area_px,
-            "damaged_area_px": total_damaged_px,
+            "damaged_area_px": total_damaged_px,   # union mask — no double counting
+            "damage_ratio": round(damage_ratio * 100, 1),  # 0-100 %
             "damages": damages,
             "materials": materials,
             "layer_analysis": layer_analysis,
