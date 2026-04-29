@@ -84,9 +84,11 @@ echo "  ✅ Frontend built → frontend/dist/"
 echo ""
 echo "▶ [4/5] Starting server..."
 
-# Kill any existing instance
-pkill -f "uvicorn server:app.*--port $APP_PORT" 2>/dev/null || true
-sleep 1
+# Kill any process holding the port (by port number, not process name)
+echo "  Freeing port $APP_PORT..."
+fuser -k "${APP_PORT}/tcp" 2>/dev/null || \
+    lsof -ti:"${APP_PORT}" | xargs -r kill -9 2>/dev/null || true
+sleep 2
 
 cd "$PROJECT_DIR/backend"
 source venv/bin/activate
@@ -115,7 +117,10 @@ STARTEOF
     # Create a stop script
     cat > "$PROJECT_DIR/stop.sh" << 'STOPEOF'
 #!/bin/bash
-pkill -f "uvicorn server:app.*--port 8080" 2>/dev/null && echo "Server stopped" || echo "Server was not running"
+PORT=8080
+fuser -k "${PORT}/tcp" 2>/dev/null || \
+    lsof -ti:"${PORT}" | xargs -r kill -9 2>/dev/null || true
+echo "Server stopped (port ${PORT} freed)"
 STOPEOF
     chmod +x "$PROJECT_DIR/stop.sh"
 
