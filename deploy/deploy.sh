@@ -1,7 +1,7 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════
 # Facade Analyzer — SSH Deployment Script
-# Порты: 8080 → 20090 (qudata.ai маппинг)
+# Порты: 8080 (внутренний) → 20011 (внешний)
 # Поддержка: systemd / Docker (без systemd)
 # ═══════════════════════════════════════════════════════
 set -e
@@ -15,7 +15,7 @@ echo "║  🏗️  Facade Analyzer — Deployment                ║"
 echo "╚═══════════════════════════════════════════════════╝"
 echo ""
 echo "Project dir: $PROJECT_DIR"
-echo "App port:    $APP_PORT (external: 20090)"
+echo "App port:    $APP_PORT (external: 20011)"
 
 # ── 1. System dependencies ──
 echo ""
@@ -54,16 +54,16 @@ echo "  Installing SAM2..."
 pip install git+https://github.com/facebookresearch/sam2.git -q
 echo "  ✅ SAM2 installed"
 
-# Download SAM2 weights via aria2c (16 threads) or wget fallback
-if [ ! -f sam2_hiera_small.pt ]; then
-    echo "  Downloading SAM2 weights (~190 MB)..."
-    SAM2_URL="https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt"
+# Download SAM2 large weights via aria2c (16 threads) or wget fallback
+if [ ! -f sam2_hiera_large.pt ]; then
+    echo "  Downloading SAM2 large weights (~850 MB)..."
+    SAM2_URL="https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
     if command -v aria2c &> /dev/null; then
-        aria2c -x 16 -s 16 -k 1M "$SAM2_URL" -o sam2_hiera_small.pt
+        aria2c -x 16 -s 16 -k 1M "$SAM2_URL" -o sam2_hiera_large.pt
     else
-        wget -q "$SAM2_URL" -O sam2_hiera_small.pt
+        wget -q "$SAM2_URL" -O sam2_hiera_large.pt
     fi
-    echo "  ✅ SAM2 weights downloaded"
+    echo "  ✅ SAM2 large weights downloaded"
 fi
 
 # Fetch material prices from leroymerlin.ru (cached 7 days)
@@ -145,7 +145,7 @@ echo "║  🚀 DEPLOYMENT COMPLETE!                         ║"
 echo "╠═══════════════════════════════════════════════════╣"
 echo "║                                                   ║"
 echo "║  Local:    http://localhost:$APP_PORT              "
-echo "║  External: http://SERVER_IP:20090"
+echo "║  External: http://SERVER_IP:20011"
 echo "║  API:      http://localhost:$APP_PORT/api/health   "
 echo "║  Docs:     http://localhost:$APP_PORT/docs         "
 echo "║                                                   ║"

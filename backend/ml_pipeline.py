@@ -256,7 +256,7 @@ def _get_base_class(raw_label: str, class_map: dict) -> Optional[str]:
 def _download_sam2_weights(dest_path: str) -> None:
     """Download SAM2 weights using aria2c (16 threads) or urllib fallback."""
     import subprocess, urllib.request
-    url = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt"
+    url = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     try:
         if subprocess.run(["which", "aria2c"], capture_output=True).returncode == 0:
@@ -313,15 +313,15 @@ class FacadeAnalyzer:
             "IDEA-Research/grounding-dino-base"
         ).to(self.device)
 
-        logger.info("Loading SAM2 (hiera_small)...")
-        weights_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sam2_hiera_small.pt")
+        logger.info("Loading SAM2 (hiera_large)...")
+        weights_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sam2_hiera_large.pt")
         if not os.path.exists(weights_path):
             _download_sam2_weights(weights_path)
 
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
         from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-        sam2_base = build_sam2("sam2_hiera_s.yaml", weights_path, device=self.device)
+        sam2_base = build_sam2("sam2_hiera_l.yaml", weights_path, device=self.device)
         self._sam2_predictor = SAM2ImagePredictor(sam2_base)
         self._sam2_amg = SAM2AutomaticMaskGenerator(
             model=sam2_base,
