@@ -274,7 +274,9 @@ class FacadeAnalyzer:
         logger.info("Loading SAM3.1 (text-prompted detection + segmentation)...")
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
-        self._sam3_model = build_sam3_image_model().to(self.device)
+        # SAM3 uses internal bfloat16 autocast on CUDA; cast weights to match.
+        dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+        self._sam3_model = build_sam3_image_model().to(self.device, dtype)
         self._sam3_processor = Sam3Processor(self._sam3_model)
 
         self.models_loaded = True
