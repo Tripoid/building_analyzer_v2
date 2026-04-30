@@ -63,11 +63,17 @@ echo "  ✅ SAM2 installed"
 # Download SAM2 large weights via HuggingFace Hub (faster than fbaipublicfiles CDN)
 if [ ! -f sam2_hiera_large.pt ]; then
     echo "  Downloading SAM2 large weights (~850 MB) from HuggingFace..."
-    huggingface-cli download facebook/sam2-hiera-large \
-        sam2_hiera_large.pt \
-        --local-dir . \
-        --local-dir-use-symlinks False
-    echo "  ✅ SAM2 large weights downloaded"
+    pip install huggingface_hub -q
+    python3 - <<'PYEOF'
+from huggingface_hub import hf_hub_download
+hf_hub_download(
+    repo_id="facebook/sam2-hiera-large",
+    filename="sam2_hiera_large.pt",
+    local_dir=".",
+    local_dir_use_symlinks=False,
+)
+print("  ✅ SAM2 large weights downloaded")
+PYEOF
 fi
 
 # Fetch material prices from leroymerlin.ru (cached 7 days)
