@@ -17,6 +17,21 @@ echo ""
 echo "Project dir: $PROJECT_DIR"
 echo "App port:    $APP_PORT (external: 44035)"
 
+# ── 0. HuggingFace token (required for gated SAM3 model) ──
+ENV_FILE="$PROJECT_DIR/.env"
+if [ -f "$ENV_FILE" ]; then
+    source "$ENV_FILE"
+fi
+if [ -z "$HF_TOKEN" ]; then
+    echo ""
+    echo "⚠️  HuggingFace token required to download SAM3 (gated model)."
+    read -rp "  Enter HF token (hf_...): " HF_TOKEN
+    echo "HF_TOKEN=$HF_TOKEN" > "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    echo "  Token saved to $ENV_FILE"
+fi
+export HF_TOKEN
+
 # ── 1. System dependencies ──
 echo ""
 echo "▶ [1/5] Installing system dependencies..."
@@ -98,7 +113,9 @@ else
     # Create a start script
     cat > "$PROJECT_DIR/start.sh" << 'STARTEOF'
 #!/bin/bash
-cd "$(dirname "$0")/backend"
+PROJ="$(dirname "$0")"
+[ -f "$PROJ/.env" ] && source "$PROJ/.env" && export HF_TOKEN
+cd "$PROJ/backend"
 source venv/bin/activate
 exec python -m uvicorn server:app --host 0.0.0.0 --port 9000 --workers 1
 STARTEOF
