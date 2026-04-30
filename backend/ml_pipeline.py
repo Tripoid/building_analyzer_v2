@@ -16,6 +16,7 @@ import torch
 import gc
 import os
 import uuid
+import contextlib
 import numpy as np
 from PIL import Image
 from typing import Dict, List, Tuple, Optional, Any
@@ -266,6 +267,12 @@ class FacadeAnalyzer:
         self._sam3_processor = None
         self._sam3_model = None
 
+    def _autocast(self):
+        """Return a bfloat16 autocast context on CUDA, no-op on CPU."""
+        if self.device == "cuda":
+            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        return contextlib.nullcontext()
+
     def load_models(self):
         """Load and cache all ML models. Call once at startup."""
         if self.models_loaded:
@@ -274,9 +281,7 @@ class FacadeAnalyzer:
         logger.info("Loading SAM3.1 (text-prompted detection + segmentation)...")
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
-        # SAM3 uses internal bfloat16 autocast on CUDA; cast weights to match.
-        dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
-        self._sam3_model = build_sam3_image_model().to(self.device, dtype)
+        self._sam3_model = build_sam3_image_model().to(self.device)
         self._sam3_processor = Sam3Processor(self._sam3_model)
 
         self.models_loaded = True
@@ -327,30 +332,31 @@ class FacadeAnalyzer:
         geom_masks = {k: np.zeros(original_size, dtype=bool) for k in GEOMETRY_SAM3_PROMPTS}
         detections = []
 
-        inference_state = self._sam3_processor.set_image(image)
+        with self._autocast():
+            inference_state = self._sam3_processor.set_image(image)
 
-        for class_key, prompt in GEOMETRY_SAM3_PROMPTS.items():
-            output = self._sam3_processor.set_text_prompt(
-                state=inference_state, prompt=prompt
-            )
-            masks = output.get("masks")
-            scores = output.get("scores")
-            boxes = output.get("boxes")
-            if masks is None or len(masks) == 0:
-                continue
-
-            for i, (mask, score) in enumerate(zip(masks, scores)):
-                if float(score) < threshold:
+            for class_key, prompt in GEOMETRY_SAM3_PROMPTS.items():
+                output = self._sam3_processor.set_text_prompt(
+                    state=inference_state, prompt=prompt
+                )
+                masks = output.get("masks")
+                scores = output.get("scores")
+                boxes = output.get("boxes")
+                if masks is None or len(masks) == 0:
                     continue
-                m = np.asarray(mask, dtype=bool)
-                if np.any(m):
-                    geom_masks[class_key] |= m
-                    box = boxes[i].tolist() if boxes is not None and len(boxes) > i else []
-                    detections.append({
-                        "class": class_key,
-                        "score": float(score),
-                        "box": box,
-                    })
+
+                for i, (mask, score) in enumerate(zip(masks, scores)):
+                    if float(score) < threshold:
+                        continue
+                    m = np.asarray(mask, dtype=bool)
+                    if np.any(m):
+                        geom_masks[class_key] |= m
+                        box = boxes[i].tolist() if boxes is not None and len(boxes) > i else []
+                        detections.append({
+                            "class": class_key,
+                            "score": float(score),
+                            "box": box,
+                        })
 
         logger.info(f"Geometry: detected {len(detections)} elements")
         return geom_masks, detections
@@ -887,24 +893,25 @@ class FacadeAnalyzer:
         image = Image.fromarray(img_rgb)
         result_masks = {k: np.zeros(original_size, dtype=bool) for k in prompts_map}
 
-        inference_state = self._sam3_processor.set_image(image)
+        with self._autocast():
+            inference_state = self._sam3_processor.set_image(image)
 
-        for class_key, prompt in prompts_map.items():
-            output = self._sam3_processor.set_text_prompt(
-                state=inference_state, prompt=prompt
-            )
-            masks = output.get("masks")
-            scores = output.get("scores")
-            if masks is None or len(masks) == 0:
-                continue
-
-            for mask, score in zip(masks, scores):
-                if float(score) < threshold:
+            for class_key, prompt in prompts_map.items():
+                output = self._sam3_processor.set_text_prompt(
+                    state=inference_state, prompt=prompt
+                )
+                masks = output.get("masks")
+                scores = output.get("scores")
+                if masks is None or len(masks) == 0:
                     continue
-                m = np.asarray(mask, dtype=bool)
-                if region_mask is not None:
-                    m = m & region_mask
-                if np.any(m):
-                    result_masks[class_key] |= m
+
+                for mask, score in zip(masks, scores):
+                    if float(score) < threshold:
+                        continue
+                    m = np.asarray(mask, dtype=bool)
+                    if region_mask is not None:
+                        m = m & region_mask
+                    if np.any(m):
+                        result_masks[class_key] |= m
 
         return result_masks
