@@ -1,21 +1,21 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════
 # Facade Analyzer — SSH Deployment Script
-# Порты: 8080 (внутренний) → 20011 (внешний)
+# Порты: 9000 (внутренний контейнер) → 44035 (внешний)
 # Поддержка: systemd / Docker (без systemd)
 # ═══════════════════════════════════════════════════════
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-APP_PORT=8080
+APP_PORT=9000
 
 echo "╔═══════════════════════════════════════════════════╗"
 echo "║  🏗️  Facade Analyzer — Deployment                ║"
 echo "╚═══════════════════════════════════════════════════╝"
 echo ""
 echo "Project dir: $PROJECT_DIR"
-echo "App port:    $APP_PORT (external: 20011)"
+echo "App port:    $APP_PORT (external: 44035)"
 
 # ── 1. System dependencies ──
 echo ""
@@ -49,7 +49,13 @@ source venv/bin/activate
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
 
-# SAM2 — required for precise mask segmentation
+# SAM3.1 — unified text-prompted detection + segmentation (replaces DINO)
+# Requires Python 3.12+ and PyTorch 2.7+
+echo "  Installing SAM3.1..."
+pip install git+https://github.com/facebookresearch/sam3.git -q
+echo "  ✅ SAM3.1 installed"
+
+# SAM2 — still required for AutoMaskGenerator (CLIPSeg+AMG material fusion)
 echo "  Installing SAM2..."
 pip install git+https://github.com/facebookresearch/sam2.git -q
 echo "  ✅ SAM2 installed"
@@ -110,14 +116,14 @@ else
 #!/bin/bash
 cd "$(dirname "$0")/backend"
 source venv/bin/activate
-exec python -m uvicorn server:app --host 0.0.0.0 --port 8080 --workers 1
+exec python -m uvicorn server:app --host 0.0.0.0 --port 9000 --workers 1
 STARTEOF
     chmod +x "$PROJECT_DIR/start.sh"
 
     # Create a stop script
     cat > "$PROJECT_DIR/stop.sh" << 'STOPEOF'
 #!/bin/bash
-PORT=8080
+PORT=9000
 fuser -k "${PORT}/tcp" 2>/dev/null || \
     lsof -ti:"${PORT}" | xargs -r kill -9 2>/dev/null || true
 echo "Server stopped (port ${PORT} freed)"
@@ -125,7 +131,7 @@ STOPEOF
     chmod +x "$PROJECT_DIR/stop.sh"
 
     # Start in background with nohup
-    nohup "$PROJECT_DIR/start.sh" > "$PROJECT_DIR/server.log" 2>&1 &
+    nohup bash "$PROJECT_DIR/start.sh" > "$PROJECT_DIR/server.log" 2>&1 &
     SERVER_PID=$!
     echo "  ✅ Server started (PID: $SERVER_PID)"
     echo "  📄 Logs: tail -f $PROJECT_DIR/server.log"
@@ -150,7 +156,7 @@ echo "║  🚀 DEPLOYMENT COMPLETE!                         ║"
 echo "╠═══════════════════════════════════════════════════╣"
 echo "║                                                   ║"
 echo "║  Local:    http://localhost:$APP_PORT              "
-echo "║  External: http://SERVER_IP:20011"
+echo "║  External: http://SERVER_IP:44035"
 echo "║  API:      http://localhost:$APP_PORT/api/health   "
 echo "║  Docs:     http://localhost:$APP_PORT/docs         "
 echo "║                                                   ║"

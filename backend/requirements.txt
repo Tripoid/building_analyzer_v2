@@ -16,7 +16,12 @@ accelerate>=0.30.0
 rembg[cpu]>=2.0.50
 # CLIPSeg — texture/material heatmaps (CIDAS/clipseg-rd64-refined via HuggingFace)
 # Included in transformers>=4.18; no extra install needed.
-# SAM2 — installed separately: pip install git+https://github.com/facebookresearch/sam2.git
+# SAM3.1 — replaces Grounding DINO + SAM2 ImagePredictor for geometry/defect detection.
+#   Requires Python 3.12+ and PyTorch 2.7+.
+#   Install: pip install git+https://github.com/facebookresearch/sam3.git
+#   Model checkpoint downloaded automatically from HuggingFace (facebook/sam3.1).
+# SAM2 — still required for AutoMaskGenerator used in CLIPSeg+AMG material fusion.
+#   Install: pip install git+https://github.com/facebookresearch/sam2.git
 
 # Inpainting — LaMa (Large Mask Inpainting).
 # Replaces Stable Diffusion: faster, no 512-px limit, preserves facade textures.

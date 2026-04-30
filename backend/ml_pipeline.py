@@ -1,16 +1,20 @@
 """
 FacadeAnalyzer — ML Pipeline for building facade analysis.
 
-Step 1: Grounding DINO + SAM2 → geometry detection (windows, doors, balconies)
-Step 2: rembg + Grounding DINO + SAM2 → wall and element defect detection
+Step 1: SAM3.1 → geometry detection (windows, doors, balconies)
+Step 2: rembg + SAM3.1 → wall and element defect detection
 Step 3: CLIPSeg + SAM2 AMG → material identification (texture fusion approach)
 Step 4: Wall layer classification based on defect and material overlap
 
-Material detection uses the notebook-proven CLIPSeg+AMG fusion:
+SAM3.1 replaces the former Grounding DINO + SAM2 ImagePredictor combo.
+  One model handles text-prompted detection and segmentation in a single pass.
+  Per-class prompts are used: set_image() once, set_text_prompt() per class.
+  Returns masks, boxes, scores directly — no NMS / label-matching needed.
+
+Material detection uses the CLIPSeg+AMG fusion (SAM2 AutoMaskGenerator):
   CLIPSeg produces per-pixel probability heatmaps for each material/texture.
-  SAM2 AutoMaskGenerator cuts the image into physically coherent segments.
+  SAM2 AMG cuts the image into physically coherent segments.
   Each segment is assigned to the material with the highest average CLIPSeg score.
-  This outperforms DINO (object detector) for distributed surface textures.
 """
 
 import cv2
@@ -21,7 +25,6 @@ import uuid
 import numpy as np
 from PIL import Image
 from typing import Dict, List, Tuple, Optional, Any
-import torchvision.ops as ops
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,16 +34,18 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════
 
-GEOMETRY_PROMPT = (
-    "window. glass pane. window frame. dormer window. glazing. "
-    "door. entrance door. front door. gate. "
-    "balcony. terrace. loggia. balcony slab. "
-    "wall. facade. building wall. "
-    "roof. gutter. eaves. parapet. "
-    "molding. architectural molding. decorative cornice. frieze. pilaster. "
-    "drainpipe. downspout. pipe. rain gutter pipe. "
-    "air conditioner. AC unit. ventilation grille. split system."
-)
+# Per-class text prompts for SAM3.1 geometry detection.
+# One entry per architectural class; set_text_prompt() is called once per entry.
+GEOMETRY_SAM3_PROMPTS = {
+    "window": "window glass pane window frame glazing dormer window",
+    "door": "entrance door front door gate doorway",
+    "balcony": "balcony terrace loggia balcony slab",
+    "building": "building facade wall",
+    "roof": "roof rooftop gutter eaves parapet",
+    "molding": "architectural molding decorative cornice frieze pilaster",
+    "pipe": "drainpipe downspout rain gutter pipe",
+    "ac_unit": "air conditioner AC unit ventilation grille split system",
+}
 
 CLASS_MAP_GEOMETRY = {
     "window": ["window", "pane", "glass", "glazing", "dormer"],
@@ -53,16 +58,24 @@ CLASS_MAP_GEOMETRY = {
     "ac_unit": ["air conditioner", "unit", "ventilation", "grille", "split"],
 }
 
-WALL_DEFECT_PROMPTS = [
-    "wall crack",
-    "peeling plaster",
-    "exposed brick",
-    "water stain",
-    "rust stain",
-    "moss",
-    "efflorescence",
-    "spalling concrete",
-]
+# Per-class text prompts for SAM3.1 defect detection.
+WALL_DEFECT_SAM3_PROMPTS = {
+    "crack":         "wall crack facade crack concrete crack surface fracture hairline crack",
+    "peeling":       "peeling plaster flaking plaster flaking paint delaminated coating blistered render",
+    "exposed_brick": "exposed brick bare brick missing plaster unplastered brick masonry",
+    "water_damage":  "water stain water damage moisture stain damp patch leakage mark",
+    "rust":          "rust stain corrosion spot iron rust mark oxidation stain",
+    "moss":          "moss lichen algae on wall biological growth green deposit",
+    "efflorescence": "efflorescence salt deposit white crystalline deposit salt stain",
+    "spalling":      "spalling concrete concrete deterioration concrete defect chipped concrete",
+}
+
+ELEMENT_DEFECT_SAM3_PROMPTS = {
+    "broken_glass":    "broken window glass shattered glass cracked glass pane damaged glazing",
+    "damaged_wood":    "damaged wooden door rotting wood deteriorated wood decay",
+    "rusty_metal":     "rusty metal railing corroded metal rusted iron oxidized metal surface",
+    "damaged_railing": "cracked balcony railing broken railing deformed railing damaged balcony fence",
+}
 
 CLASS_MAP_WALL_DEFECTS = {
     "crack":        ["crack", "fracture", "fissure", "crevice", "cleft"],
@@ -74,13 +87,6 @@ CLASS_MAP_WALL_DEFECTS = {
     "efflorescence":["efflorescence", "salt deposit", "crystalline", "white deposit", "salt stain"],
     "spalling":     ["spalling", "concrete", "deterioration", "defect", "chipping"],
 }
-
-ELEMENT_DEFECT_PROMPTS = [
-    "broken window glass",
-    "damaged wooden door",
-    "rusty metal railing",
-    "cracked balcony railing",
-]
 
 CLASS_MAP_ELEMENT_DEFECTS = {
     "broken_glass":    ["broken", "glass", "shattered", "cracked glass", "damaged glass"],
@@ -109,7 +115,6 @@ MATERIAL_CLIPSEG_IDX_MAP = {
 }
 MATERIAL_CLIPSEG_CONFIDENCE = 0.28   # min CLIPSeg score to assign a material
 
-# Legacy DINO prompts kept for reference (no longer used for materials)
 MATERIAL_PROMPTS = MATERIAL_PROMPTS_CLIPSEG
 
 CLASS_MAP_MATERIALS = {
@@ -278,11 +283,11 @@ def _adaptive_params(image_shape: Tuple[int, int]) -> dict:
     h, w = image_shape[:2]
     total_px = h * w
     if total_px > 2_000_000:  # >2MP
-        return {"points_per_side": 48, "min_mask_area": 500, "dino_threshold": 0.18, "dino_text_threshold": 0.18}
+        return {"points_per_side": 48, "min_mask_area": 500, "sam3_threshold": 0.40}
     elif total_px > 800_000:  # >0.8MP
-        return {"points_per_side": 32, "min_mask_area": 300, "dino_threshold": 0.18, "dino_text_threshold": 0.18}
+        return {"points_per_side": 32, "min_mask_area": 300, "sam3_threshold": 0.40}
     else:
-        return {"points_per_side": 16, "min_mask_area": 150, "dino_threshold": 0.18, "dino_text_threshold": 0.18}
+        return {"points_per_side": 16, "min_mask_area": 150, "sam3_threshold": 0.40}
 
 
 class FacadeAnalyzer:
@@ -294,10 +299,9 @@ class FacadeAnalyzer:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.models_loaded = False
-        self._dino_processor = None
-        self._dino_model = None
-        self._sam2_predictor = None
-        self._sam2_amg = None
+        self._sam3_processor = None
+        self._sam3_model = None
+        self._sam2_amg = None         # SAM2 AMG: used for CLIPSeg+AMG material fusion only
         self._clipseg_processor = None
         self._clipseg_model = None
 
@@ -306,23 +310,20 @@ class FacadeAnalyzer:
         if self.models_loaded:
             return
 
-        logger.info("Loading Grounding DINO...")
-        from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
-        self._dino_processor = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
-        self._dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            "IDEA-Research/grounding-dino-base"
-        ).to(self.device)
+        logger.info("Loading SAM3.1 (text-prompted detection + segmentation)...")
+        from sam3.model_builder import build_sam3_image_model
+        from sam3.model.sam3_image_processor import Sam3Processor
+        self._sam3_model = build_sam3_image_model()
+        self._sam3_processor = Sam3Processor(self._sam3_model)
 
-        logger.info("Loading SAM2 (hiera_large)...")
+        logger.info("Loading SAM2 AMG (for CLIPSeg+AMG material fusion)...")
         weights_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sam2_hiera_large.pt")
         if not os.path.exists(weights_path):
             _download_sam2_weights(weights_path)
 
         from sam2.build_sam import build_sam2
-        from sam2.sam2_image_predictor import SAM2ImagePredictor
         from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
         sam2_base = build_sam2("sam2_hiera_l.yaml", weights_path, device=self.device)
-        self._sam2_predictor = SAM2ImagePredictor(sam2_base)
         self._sam2_amg = SAM2AutomaticMaskGenerator(
             model=sam2_base,
             points_per_side=32,
@@ -373,72 +374,42 @@ class FacadeAnalyzer:
         return img_denoised
 
     # ─────────────────────────────────────────────────
-    # STEP 1: Geometry Detection (DINO + SAM)
+    # STEP 1: Geometry Detection (SAM3.1)
     # ─────────────────────────────────────────────────
 
     def detect_geometry(self, img_rgb: np.ndarray) -> Tuple[Dict[str, np.ndarray], list]:
-        """Detect architectural elements using Grounding DINO + SAM."""
+        """Detect architectural elements using SAM3.1 text-prompted segmentation."""
         image = Image.fromarray(img_rgb)
-        original_size = image.size[::-1]  # (H, W)
+        original_size = img_rgb.shape[:2]
         params = _adaptive_params(img_rgb.shape)
+        threshold = params["sam3_threshold"]
 
-        # DINO detection
-        dino_inputs = self._dino_processor(
-            images=image, text=GEOMETRY_PROMPT, return_tensors="pt"
-        ).to(self.device)
-
-        with torch.no_grad():
-            dino_outputs = self._dino_model(**dino_inputs)
-
-        results = self._dino_processor.post_process_grounded_object_detection(
-            dino_outputs, dino_inputs.input_ids,
-            threshold=params["dino_threshold"],
-            text_threshold=params["dino_text_threshold"],
-            target_sizes=[original_size]
-        )[0]
-
-        all_scores = results["scores"].cpu()
-        valid = all_scores > params["dino_threshold"]
-        raw_boxes = results["boxes"].cpu()[valid]
-        raw_scores = all_scores[valid]
-        labels_out = results.get("text_labels", results.get("labels"))
-        raw_labels = [labels_out[i] for i, v in enumerate(valid) if v]
-
-        # NMS per category
-        geom_masks = {k: np.zeros(original_size, dtype=bool) for k in CLASS_MAP_GEOMETRY}
+        geom_masks = {k: np.zeros(original_size, dtype=bool) for k in GEOMETRY_SAM3_PROMPTS}
         detections = []
 
-        if len(raw_boxes) > 0:
-            class_keys = list(CLASS_MAP_GEOMETRY.keys())
-            category_idxs = torch.tensor([
-                class_keys.index(_get_base_class(l, CLASS_MAP_GEOMETRY))
-                if _get_base_class(l, CLASS_MAP_GEOMETRY) in class_keys else 99
-                for l in raw_labels
-            ])
-            keep = ops.batched_nms(raw_boxes, raw_scores, category_idxs, iou_threshold=0.5).numpy()
-            boxes = raw_boxes[keep].numpy()
-            scores = raw_scores[keep].numpy()
-            labels = [raw_labels[i] for i in keep]
+        inference_state = self._sam3_processor.set_image(image)
 
-            # SAM2 segmentation — one box at a time for tight, precise masks
-            if len(boxes) > 0:
-                self._sam2_predictor.set_image(img_rgb)
-                areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
-                sorted_indices = np.argsort(areas)[::-1]
+        for class_key, prompt in GEOMETRY_SAM3_PROMPTS.items():
+            output = self._sam3_processor.set_text_prompt(
+                state=inference_state, prompt=prompt
+            )
+            masks = output.get("masks")
+            scores = output.get("scores")
+            boxes = output.get("boxes")
+            if masks is None or len(masks) == 0:
+                continue
 
-                for i in sorted_indices:
-                    base_class = _get_base_class(str(labels[i]), CLASS_MAP_GEOMETRY) or "unknown"
-                    with torch.no_grad():
-                        pred_masks, _, _ = self._sam2_predictor.predict(
-                            box=boxes[i], multimask_output=False
-                        )
-                    mask = pred_masks[0].astype(bool)
-                    if base_class in geom_masks:
-                        geom_masks[base_class] |= mask
+            for i, (mask, score) in enumerate(zip(masks, scores)):
+                if float(score) < threshold:
+                    continue
+                m = np.asarray(mask, dtype=bool)
+                if np.any(m):
+                    geom_masks[class_key] |= m
+                    box = boxes[i].tolist() if boxes is not None and len(boxes) > i else []
                     detections.append({
-                        "class": base_class,
-                        "score": float(scores[i]),
-                        "box": boxes[i].tolist(),
+                        "class": class_key,
+                        "score": float(score),
+                        "box": box,
                     })
 
         logger.info(f"Geometry: detected {len(detections)} elements")
@@ -451,7 +422,7 @@ class FacadeAnalyzer:
     def detect_defects(
         self, img_rgb: np.ndarray, geom_masks: Dict[str, np.ndarray]
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
-        """Detect wall and element defects using rembg + Grounding DINO + SAM."""
+        """Detect wall and element defects using rembg + SAM3.1."""
         from rembg import remove
         original_size = img_rgb.shape[:2]
         params = _adaptive_params(img_rgb.shape)
@@ -468,28 +439,12 @@ class FacadeAnalyzer:
                 elements |= geom_masks[key]
         bare_wall = silhouette & ~elements
 
-        # 3. Wall defects via Grounding DINO + SAM
-        # Use silhouette (not bare_wall) as region mask: SAM window masks expand
-        # well beyond actual glass, leaving bare_wall nearly empty and filtering
-        # out real cracks/peeling. Text prompts provide semantic specificity.
-        # Synonyms expand recall: DINO returns the matched phrase as a label,
-        # which CLASS_MAP_WALL_DEFECTS then maps to a canonical defect key.
-        logger.info("Scanning wall defects (DINO + SAM)...")
-        wall_defect_prompt = (
-            "wall crack. facade crack. concrete crack. hairline crack. surface fracture. "
-            "peeling plaster. flaking plaster. flaking paint. delaminated coating. blistered render. "
-            "exposed brick. bare brick. missing plaster. unplastered brick masonry. "
-            "water stain. water damage. moisture stain. damp patch. leakage mark. humidity stain. "
-            "rust stain. corrosion spot. iron rust mark. oxidation stain. "
-            "moss. lichen. algae on wall. biological growth. green deposit. "
-            "efflorescence. salt deposit. white crystalline deposit. salt stain. "
-            "spalling concrete. concrete deterioration. concrete defect. chipped concrete."
-        )
-        wall_defect_masks = self._dino_sam_segment(
-            img_rgb, wall_defect_prompt, CLASS_MAP_WALL_DEFECTS,
-            original_size, region_mask=silhouette,
-            threshold=params["dino_threshold"],
-            text_threshold=params["dino_text_threshold"],
+        # 3. Wall defects via SAM3.1: per-class text prompts → masks directly.
+        # Use silhouette as region mask so that masks stay within the building.
+        logger.info("Scanning wall defects (SAM3.1)...")
+        wall_defect_masks = self._sam3_segment(
+            img_rgb, WALL_DEFECT_SAM3_PROMPTS, original_size,
+            region_mask=silhouette, threshold=params["sam3_threshold"],
         )
 
         # Sanity cap for wall defects: a single type covering >70% of silhouette is a false positive
@@ -500,19 +455,11 @@ class FacadeAnalyzer:
                 logger.warning(f"Wall defect '{key}' covers {coverage:.1%} — zeroing (false positive)")
                 wall_defect_masks[key] = np.zeros(original_size, dtype=bool)
 
-        # 4. Element defects via DINO + SAM
-        logger.info("Scanning element defects (DINO + SAM)...")
-        element_defect_prompt = (
-            "broken window glass. shattered glass. cracked glass pane. damaged glazing. "
-            "damaged wooden door. rotting wood. deteriorated wood. wood decay. "
-            "rusty metal railing. corroded metal. rusted iron. oxidized metal surface. "
-            "cracked balcony railing. broken railing. deformed railing. damaged balcony fence."
-        )
-        element_defect_masks = self._dino_sam_segment(
-            img_rgb, element_defect_prompt, CLASS_MAP_ELEMENT_DEFECTS,
-            original_size,
-            threshold=params["dino_threshold"],
-            text_threshold=params["dino_text_threshold"],
+        # 4. Element defects via SAM3.1
+        logger.info("Scanning element defects (SAM3.1)...")
+        element_defect_masks = self._sam3_segment(
+            img_rgb, ELEMENT_DEFECT_SAM3_PROMPTS, original_size,
+            threshold=params["sam3_threshold"],
         )
 
         # Spatial routing: element defects only within their geometry
@@ -996,73 +943,44 @@ class FacadeAnalyzer:
         }
 
     # ─────────────────────────────────────────────────
-    # HELPER: Grounding DINO + SAM segmentation
+    # HELPER: SAM3.1 text-prompted segmentation
     # ─────────────────────────────────────────────────
 
-    def _dino_sam_segment(
+    def _sam3_segment(
         self,
         img_rgb: np.ndarray,
-        prompt: str,
-        class_map: dict,
+        prompts_map: Dict[str, str],
         original_size: Tuple[int, int],
         region_mask: Optional[np.ndarray] = None,
-        threshold: float = 0.25,
-        text_threshold: float = 0.25,
+        threshold: float = 0.40,
     ) -> Dict[str, np.ndarray]:
-        """Generic Grounding DINO + SAM segmentation with optional region masking."""
+        """SAM3.1 segmentation: one text prompt per class, returns masks directly.
+
+        prompts_map: {class_key: prompt_string} — set_text_prompt() called once per entry.
+        SAM3.1 returns all instances of the queried concept as pixel masks + scores.
+        No NMS or label-matching needed; class identity comes from the prompt loop.
+        """
         image = Image.fromarray(img_rgb)
+        result_masks = {k: np.zeros(original_size, dtype=bool) for k in prompts_map}
 
-        dino_inputs = self._dino_processor(
-            images=image, text=prompt, return_tensors="pt"
-        ).to(self.device)
+        inference_state = self._sam3_processor.set_image(image)
 
-        with torch.no_grad():
-            dino_outputs = self._dino_model(**dino_inputs)
-
-        results = self._dino_processor.post_process_grounded_object_detection(
-            dino_outputs, dino_inputs.input_ids,
-            threshold=threshold,
-            text_threshold=text_threshold,
-            target_sizes=[original_size]
-        )[0]
-
-        all_scores = results["scores"].cpu()
-        valid = all_scores > threshold
-        raw_boxes = results["boxes"].cpu()[valid]
-        raw_scores = all_scores[valid]
-        labels_out = results.get("text_labels", results.get("labels"))
-        raw_labels = [labels_out[i] for i, v in enumerate(valid) if v]
-
-        result_masks = {k: np.zeros(original_size, dtype=bool) for k in class_map}
-
-        if len(raw_boxes) == 0:
-            return result_masks
-
-        # NMS across categories
-        class_keys = list(class_map.keys())
-        category_idxs = torch.tensor([
-            class_keys.index(_get_base_class(l, class_map))
-            if _get_base_class(l, class_map) in class_keys else 99
-            for l in raw_labels
-        ])
-        keep = ops.batched_nms(raw_boxes, raw_scores, category_idxs, iou_threshold=0.5).numpy()
-        boxes = raw_boxes[keep].numpy()
-        labels = [raw_labels[i] for i in keep]
-
-        # SAM2 segmentation — per-box for tight masks that stay inside detected regions
-        self._sam2_predictor.set_image(img_rgb)
-        for box, label in zip(boxes, labels):
-            base_class = _get_base_class(str(label), class_map)
-            if base_class is None:
+        for class_key, prompt in prompts_map.items():
+            output = self._sam3_processor.set_text_prompt(
+                state=inference_state, prompt=prompt
+            )
+            masks = output.get("masks")
+            scores = output.get("scores")
+            if masks is None or len(masks) == 0:
                 continue
-            with torch.no_grad():
-                pred_masks, _, _ = self._sam2_predictor.predict(
-                    box=box, multimask_output=False
-                )
-            final_mask = pred_masks[0].astype(bool)
-            if region_mask is not None:
-                final_mask &= region_mask
-            if np.any(final_mask):
-                result_masks[base_class] |= final_mask
+
+            for mask, score in zip(masks, scores):
+                if float(score) < threshold:
+                    continue
+                m = np.asarray(mask, dtype=bool)
+                if region_mask is not None:
+                    m = m & region_mask
+                if np.any(m):
+                    result_masks[class_key] |= m
 
         return result_masks

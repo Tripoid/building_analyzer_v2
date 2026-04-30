@@ -4,7 +4,7 @@
 
 ```
 ┌──────────────────────────────────────────────────┐
-│              Сервер                              │
+│              Контейнер                           │
 │                                                  │
 │  ┌────────────────────────────────────────────┐  │
 │  │  FastAPI (uvicorn) :9000                   │  │
@@ -12,18 +12,18 @@
 │  │  └── /*         → React SPA (static)       │  │
 │  └────────────────────────────────────────────┘  │
 │                                                  │
-│  Внешний доступ:  :44025 → :9000                 │
+│  Внешний доступ:  :44035 → :9000                 │
 └──────────────────────────────────────────────────┘
 ```
 
 ## Порты сервера
 
-| Внешний порт | Внутренний порт | Назначение         |
+| Внешний порт | Контейнер порт | Назначение         |
 |:---:|:---:|---|
-| 44023 | 22   | SSH                        |
-| 44024 | 8888 | Jupyter                    |
-| **44025** | **9000** | **Facade Analyzer (web)** |
-| 44026–44032 | 9001–9007 | Свободны            |
+| 44033 | 22   | SSH                        |
+| 44034 | 8888 | Jupyter                    |
+| **44035** | **9000** | **Facade Analyzer (web)** |
+| 44036–44042 | 9001–9007 | Свободны            |
 
 ## Требования к серверу
 
@@ -37,7 +37,7 @@
 ### 1. Подключитесь к серверу
 
 ```bash
-ssh -p 44023 user@YOUR_SERVER_IP
+ssh -p 44033 user@YOUR_SERVER_IP
 ```
 
 ### 2. Клонируйте репозиторий
@@ -65,7 +65,7 @@ sudo ./deploy/deploy.sh
 ### 4. Откройте в браузере
 
 ```
-http://YOUR_SERVER_IP:44025
+http://YOUR_SERVER_IP:44035
 ```
 
 ## Ручной деплой (пошагово)
@@ -79,10 +79,8 @@ python3 -m venv venv
 source venv/bin/activate
 
 pip install -r requirements.txt
+pip install git+https://github.com/facebookresearch/sam3.git
 pip install git+https://github.com/facebookresearch/sam2.git
-
-# Скачать веса SAM2
-wget https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt
 
 # Тест (порт 9000)
 python server.py
@@ -137,7 +135,7 @@ sudo systemctl restart facade-analyzer
 building_analyzer_v2/
 ├── backend/
 │   ├── server.py              # FastAPI :9000 + React static
-│   ├── ml_pipeline.py         # ML: DINO + SAM + CLIPSeg + SAM2
+│   ├── ml_pipeline.py         # ML: SAM3.1 + CLIPSeg + SAM2 AMG
 │   ├── repair_calculator.py   # Калькулятор стоимости ремонта
 │   └── requirements.txt
 ├── frontend/
