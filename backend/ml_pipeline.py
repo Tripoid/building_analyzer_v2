@@ -313,7 +313,7 @@ class FacadeAnalyzer:
         logger.info("Loading SAM3.1 (text-prompted detection + segmentation)...")
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
-        self._sam3_model = build_sam3_image_model().to(self.device).float()
+        self._sam3_model = build_sam3_image_model().to(self.device)
         self._sam3_processor = Sam3Processor(self._sam3_model)
 
         logger.info("Loading SAM2 AMG (for CLIPSeg+AMG material fusion)...")
