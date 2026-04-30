@@ -3,18 +3,12 @@ FacadeAnalyzer — ML Pipeline for building facade analysis.
 
 Step 1: SAM3.1 → geometry detection (windows, doors, balconies)
 Step 2: rembg + SAM3.1 → wall and element defect detection
-Step 3: CLIPSeg + SAM2 AMG → material identification (texture fusion approach)
+Step 3: SAM3.1 → material identification (text-prompted per class)
 Step 4: Wall layer classification based on defect and material overlap
 
-SAM3.1 replaces the former Grounding DINO + SAM2 ImagePredictor combo.
-  One model handles text-prompted detection and segmentation in a single pass.
-  Per-class prompts are used: set_image() once, set_text_prompt() per class.
-  Returns masks, boxes, scores directly — no NMS / label-matching needed.
-
-Material detection uses the CLIPSeg+AMG fusion (SAM2 AutoMaskGenerator):
-  CLIPSeg produces per-pixel probability heatmaps for each material/texture.
-  SAM2 AMG cuts the image into physically coherent segments.
-  Each segment is assigned to the material with the highest average CLIPSeg score.
+SAM3.1 is the only ML model — handles geometry, defects, and materials.
+  set_image() once per image, set_text_prompt() once per class.
+  Returns masks, boxes, scores directly — no separate detector needed.
 """
 
 import cv2
@@ -95,27 +89,16 @@ CLASS_MAP_ELEMENT_DEFECTS = {
     "damaged_railing": ["cracked", "railing", "broken railing", "damaged railing", "deformed"],
 }
 
-# CLIPSeg prompts for material detection (CLIPSeg+AMG fusion approach)
-# Index order matches MATERIAL_CLIPSEG_IDX_MAP below.
-MATERIAL_PROMPTS_CLIPSEG = [
-    "smooth painted plaster wall facade surface texture",          # 0 → cement_plaster
-    "exposed bare red brick masonry wall texture",                  # 1 → brick
-    "grey rough concrete surface stone texture",                    # 2 → concrete
-    "decorative white stucco molding cornice ornament relief",      # 3 → molding
-    "glazed ceramic tile cladding surface texture",                 # 4 → ceramic_tile
-    "textured decorative structured plaster facade surface",        # 5 → decorative_plaster
-]
-MATERIAL_CLIPSEG_IDX_MAP = {
-    0: "cement_plaster",
-    1: "brick",
-    2: "concrete",
-    3: "molding",
-    4: "ceramic_tile",
-    5: "decorative_plaster",
+# Per-class text prompts for SAM3.1 material detection.
+MATERIAL_SAM3_PROMPTS = {
+    "concrete":           "grey concrete stone wall base foundation",
+    "brick":              "terracotta red brick masonry wall surface exposed brick",
+    "cement_plaster":     "plain smooth cement plaster wall facade",
+    "decorative_plaster": "textured decorative structured plaster facade surface",
+    "molding":            "architectural molding decorative cornice frieze ornament",
+    "ceramic_tile":       "ceramic tile cladding facade glazed tile",
+    "painted_surface":    "painted wall smooth painted surface color coat",
 }
-MATERIAL_CLIPSEG_CONFIDENCE = 0.28   # min CLIPSeg score to assign a material
-
-MATERIAL_PROMPTS = MATERIAL_PROMPTS_CLIPSEG
 
 CLASS_MAP_MATERIALS = {
     "concrete": ["concrete"],
@@ -258,25 +241,6 @@ def _get_base_class(raw_label: str, class_map: dict) -> Optional[str]:
     return None
 
 
-def _download_sam2_weights(dest_path: str) -> None:
-    """Download SAM2 weights from HuggingFace (better CDN than fbaipublicfiles)."""
-    import subprocess, urllib.request
-    url = "https://huggingface.co/facebook/sam2-hiera-small/resolve/main/sam2_hiera_small.pt"
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    try:
-        if subprocess.run(["which", "aria2c"], capture_output=True).returncode == 0:
-            logger.info("Downloading SAM2 weights via aria2c (16 threads)…")
-            subprocess.run(
-                ["aria2c", "-x", "16", "-s", "16", "-k", "1M", url, "-o", dest_path],
-                check=True
-            )
-        else:
-            logger.info("Downloading SAM2 weights via urllib (single thread)…")
-            urllib.request.urlretrieve(url, dest_path)
-        logger.info("SAM2 weights downloaded.")
-    except Exception as e:
-        raise RuntimeError(f"Failed to download SAM2 weights: {e}") from e
-
 
 def _adaptive_params(image_shape: Tuple[int, int]) -> dict:
     """Return adaptive ML parameters based on image resolution."""
@@ -301,9 +265,6 @@ class FacadeAnalyzer:
         self.models_loaded = False
         self._sam3_processor = None
         self._sam3_model = None
-        self._sam2_amg = None         # SAM2 AMG: used for CLIPSeg+AMG material fusion only
-        self._clipseg_processor = None
-        self._clipseg_model = None
 
     def load_models(self):
         """Load and cache all ML models. Call once at startup."""
@@ -315,30 +276,6 @@ class FacadeAnalyzer:
         from sam3.model.sam3_image_processor import Sam3Processor
         self._sam3_model = build_sam3_image_model().to(self.device)
         self._sam3_processor = Sam3Processor(self._sam3_model)
-
-        logger.info("Loading SAM2 AMG (for CLIPSeg+AMG material fusion)...")
-        weights_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sam2_hiera_large.pt")
-        if not os.path.exists(weights_path):
-            _download_sam2_weights(weights_path)
-
-        from sam2.build_sam import build_sam2
-        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-        sam2_base = build_sam2("sam2_hiera_l.yaml", weights_path, device=self.device)
-        sam2_base = sam2_base.float()
-        self._sam2_amg = SAM2AutomaticMaskGenerator(
-            model=sam2_base,
-            points_per_side=32,
-            pred_iou_thresh=0.80,
-            stability_score_thresh=0.80,
-            min_mask_region_area=300,
-        )
-
-        logger.info("Loading CLIPSeg (material texture heatmaps)...")
-        from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
-        self._clipseg_processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
-        self._clipseg_model = CLIPSegForImageSegmentation.from_pretrained(
-            "CIDAS/clipseg-rd64-refined"
-        ).to(self.device).float()
 
         self.models_loaded = True
         logger.info("All models loaded successfully.")
@@ -498,91 +435,75 @@ class FacadeAnalyzer:
         self, img_rgb: np.ndarray, geom_masks: Dict[str, np.ndarray],
         wall_defect_masks: Optional[Dict[str, np.ndarray]] = None
     ) -> Dict[str, np.ndarray]:
-        """
-        Identify facade materials using CLIPSeg heatmaps + SAM2 AMG fusion.
-
-        CLIPSeg produces per-pixel probability maps for each material texture.
-        SAM2 AMG cuts the image into physically coherent segments.
-        Each segment is assigned to the material with the highest average score.
-        Unclassified silhouette pixels default to cement_plaster.
-        """
+        """Identify facade materials using SAM3.1 text-prompted segmentation."""
         from rembg import remove
         original_size = img_rgb.shape[:2]
 
-        # Rebuild silhouette
         rgba = remove(img_rgb)
         silhouette = rgba[:, :, 3] > 128
 
-        # ── 1. CLIPSeg heatmaps ───────────────────────────────────────────────
-        logger.info("CLIPSeg material heatmaps…")
-        clipseg_probs = self._get_clipseg_probs(img_rgb, MATERIAL_PROMPTS_CLIPSEG, original_size)
+        # Bare wall = silhouette minus architectural elements
+        elements = np.zeros(original_size, dtype=bool)
+        for key in ["window", "door", "balcony", "roof", "pipe", "ac_unit"]:
+            if key in geom_masks:
+                elements |= geom_masks[key]
+        bare_wall = silhouette & ~elements
 
-        # ── 2. SAM2 AMG — physical segments ───────────────────────────────────
-        logger.info("SAM2 AMG auto-segmentation…")
-        with torch.no_grad():
-            amg_masks = self._sam2_amg.generate(img_rgb)
-        logger.info(f"AMG produced {len(amg_masks)} segments")
+        logger.info("SAM3.1 material segmentation...")
+        raw = self._sam3_segment(img_rgb, MATERIAL_SAM3_PROMPTS, original_size, region_mask=bare_wall)
 
-        # ── 3. Fusion: assign each segment to its dominant material ───────────
         final_materials: Dict[str, np.ndarray] = {
-            k: np.zeros(original_size, dtype=bool) for k in CLASS_MAP_MATERIALS
+            k: np.zeros(original_size, dtype=bool) for k in MATERIAL_SAM3_PROMPTS
         }
-        classified = np.zeros(original_size, dtype=bool)
 
-        for ann in amg_masks:
-            seg: np.ndarray = ann["segmentation"]
+        # Z-index assembly: structural → base → surface → decorative → top
+        concrete_m = raw["concrete"] & bare_wall
+        final_materials["concrete"] |= concrete_m
 
-            # Skip segments fully outside the building silhouette
-            if not np.any(seg & silhouette):
-                continue
+        # Cement plaster fills remaining bare wall
+        plaster_m = bare_wall & ~concrete_m
+        final_materials["cement_plaster"] |= plaster_m
 
-            valid = seg & silhouette
-            scores = [float(clipseg_probs[i][seg].mean()) for i in range(len(MATERIAL_PROMPTS_CLIPSEG))]
-            best_idx = int(np.argmax(scores))
+        # Brick overrides plaster
+        brick_m = raw["brick"] & plaster_m
+        if np.any(brick_m):
+            final_materials["brick"] |= brick_m
+            final_materials["cement_plaster"] &= ~brick_m
 
-            if scores[best_idx] >= MATERIAL_CLIPSEG_CONFIDENCE:
-                mat_key = MATERIAL_CLIPSEG_IDX_MAP.get(best_idx)
-                if mat_key and mat_key in final_materials:
-                    final_materials[mat_key] |= valid
-                    classified |= valid
+        # Decorative plaster overrides cement plaster
+        dec_m = raw["decorative_plaster"] & final_materials["cement_plaster"]
+        if np.any(dec_m):
+            final_materials["decorative_plaster"] |= dec_m
+            final_materials["cement_plaster"] &= ~dec_m
 
-        # ── 4. Default: unclassified silhouette pixels → cement_plaster ───────
-        final_materials["cement_plaster"] |= (silhouette & ~classified)
+        # Painted surface overrides cement plaster
+        paint_m = raw["painted_surface"] & final_materials["cement_plaster"]
+        if np.any(paint_m):
+            final_materials["painted_surface"] |= paint_m
+            final_materials["cement_plaster"] &= ~paint_m
 
-        # ── 5. Augment brick from exposed_brick defect mask ───────────────────
+        # Ceramic tile overrides lower layers
+        tile_m = raw["ceramic_tile"] & bare_wall
+        if np.any(tile_m):
+            final_materials["ceramic_tile"] |= tile_m
+            for k in ["cement_plaster", "decorative_plaster", "brick", "painted_surface"]:
+                final_materials[k] &= ~tile_m
+
+        # Molding — highest z-index
+        final_materials["molding"] |= raw["molding"] & bare_wall
+
+        # Augment brick from exposed_brick defect mask
         if wall_defect_masks:
             exposed = wall_defect_masks.get("exposed_brick", np.zeros(original_size, dtype=bool))
             if np.any(exposed):
-                # Move exposed areas from plaster → brick
                 final_materials["cement_plaster"] &= ~exposed
                 final_materials["brick"] |= (exposed & silhouette)
 
         torch.cuda.empty_cache()
         gc.collect()
 
-        logger.info("Material analysis complete (CLIPSeg+AMG).")
+        logger.info("Material analysis complete (SAM3.1).")
         return final_materials
-
-    def _get_clipseg_probs(
-        self, img_rgb: np.ndarray, prompts: List[str], original_size: Tuple[int, int]
-    ) -> np.ndarray:
-        """Run CLIPSeg and return per-prompt probability maps, shape (N, H, W)."""
-        image = Image.fromarray(img_rgb)
-        inputs = self._clipseg_processor(
-            text=prompts,
-            images=[image] * len(prompts),
-            padding=True,
-            return_tensors="pt",
-        ).to(self.device)
-        with torch.no_grad():
-            outputs = self._clipseg_model(**inputs)
-        probs = torch.nn.functional.interpolate(
-            outputs.logits.unsqueeze(1),
-            size=original_size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(1)
-        return torch.sigmoid(probs).cpu().numpy()  # (N, H, W)
 
     # ─────────────────────────────────────────────────
     # STEP 4: Wall Layer Classification

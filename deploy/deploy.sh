@@ -55,27 +55,6 @@ echo "  Installing SAM3.1..."
 pip install git+https://github.com/facebookresearch/sam3.git -q
 echo "  ✅ SAM3.1 installed"
 
-# SAM2 — still required for AutoMaskGenerator (CLIPSeg+AMG material fusion)
-# PyPI wheel is pre-compiled — much faster than building from GitHub source.
-echo "  Installing SAM2..."
-pip install sam-2 -q
-echo "  ✅ SAM2 installed"
-
-# Download SAM2 large weights via HuggingFace Hub (faster than fbaipublicfiles CDN)
-if [ ! -f sam2_hiera_large.pt ]; then
-    echo "  Downloading SAM2 large weights (~850 MB) from HuggingFace..."
-    pip install huggingface_hub -q
-    python3 - <<'PYEOF'
-from huggingface_hub import hf_hub_download
-hf_hub_download(
-    repo_id="facebook/sam2-hiera-large",
-    filename="sam2_hiera_large.pt",
-    local_dir=".",
-    local_dir_use_symlinks=False,
-)
-print("  ✅ SAM2 large weights downloaded")
-PYEOF
-fi
 
 # Fetch material prices from leroymerlin.ru (cached 7 days)
 echo "  Fetching material prices..."
