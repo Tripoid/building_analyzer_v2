@@ -259,9 +259,9 @@ def _get_base_class(raw_label: str, class_map: dict) -> Optional[str]:
 
 
 def _download_sam2_weights(dest_path: str) -> None:
-    """Download SAM2 weights using aria2c (16 threads) or urllib fallback."""
+    """Download SAM2 weights from HuggingFace (better CDN than fbaipublicfiles)."""
     import subprocess, urllib.request
-    url = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
+    url = "https://huggingface.co/facebook/sam2-hiera-small/resolve/main/sam2_hiera_small.pt"
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     try:
         if subprocess.run(["which", "aria2c"], capture_output=True).returncode == 0:
@@ -313,7 +313,7 @@ class FacadeAnalyzer:
         logger.info("Loading SAM3.1 (text-prompted detection + segmentation)...")
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
-        self._sam3_model = build_sam3_image_model()
+        self._sam3_model = build_sam3_image_model().to(self.device).float()
         self._sam3_processor = Sam3Processor(self._sam3_model)
 
         logger.info("Loading SAM2 AMG (for CLIPSeg+AMG material fusion)...")
@@ -324,6 +324,7 @@ class FacadeAnalyzer:
         from sam2.build_sam import build_sam2
         from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
         sam2_base = build_sam2("sam2_hiera_l.yaml", weights_path, device=self.device)
+        sam2_base = sam2_base.float()
         self._sam2_amg = SAM2AutomaticMaskGenerator(
             model=sam2_base,
             points_per_side=32,
@@ -337,7 +338,7 @@ class FacadeAnalyzer:
         self._clipseg_processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
         self._clipseg_model = CLIPSegForImageSegmentation.from_pretrained(
             "CIDAS/clipseg-rd64-refined"
-        ).to(self.device)
+        ).to(self.device).float()
 
         self.models_loaded = True
         logger.info("All models loaded successfully.")
