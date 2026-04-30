@@ -11,6 +11,7 @@ torch>=2.0.0
 torchvision>=0.15.0
 transformers>=4.40.0
 accelerate>=0.30.0
+einops>=0.7.0
 
 # Segmentation
 rembg[cpu]>=2.0.50
