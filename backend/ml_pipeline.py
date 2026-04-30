@@ -312,10 +312,44 @@ class FacadeAnalyzer:
         self._sam3_processor = Sam3Processor(self._sam3_model)
 
         if self.device == "cuda":
-            # Standard cast reaches registered modules only.
-            # _cast_all_to_bf16 also reaches blocks stored in plain Python lists.
             FacadeAnalyzer._cast_all_to_bf16(self._sam3_model)
-            logger.info("SAM3 model fully cast to bfloat16 (registered + unregistered).")
+
+            # Verify which params (if any) are still float32 after the cast.
+            # This tells us whether the cast reached all submodules.
+            still_f32 = [
+                (n, tuple(p.shape))
+                for n, p in self._sam3_model.named_parameters()
+                if p.dtype == torch.float32
+            ]
+            if still_f32:
+                logger.warning(
+                    f"SAM3: {len(still_f32)} params still float32 after cast "
+                    f"(first 5): {still_f32[:5]}"
+                )
+                # Force cast the remaining ones using the standard API.
+                self._sam3_model.bfloat16()
+            else:
+                logger.info("SAM3: all parameters cast to bfloat16.")
+
+            # Runtime safety net: patch Block.forward so x is cast to the
+            # block's own parameter dtype before every transformer block.
+            # This handles any residual mismatch (e.g. lazy-loaded float32
+            # weights loaded after our cast).
+            try:
+                from sam3.model.vitdet import Block as _SAM3Block
+                _orig_fwd = _SAM3Block.forward
+                def _dtype_safe_fwd(self_blk, x):
+                    try:
+                        target = next(iter(self_blk.parameters())).dtype
+                        if x.dtype != target:
+                            x = x.to(target)
+                    except StopIteration:
+                        pass
+                    return _orig_fwd(self_blk, x)
+                _SAM3Block.forward = _dtype_safe_fwd
+                logger.info("SAM3 Block.forward patched for dtype safety.")
+            except Exception as patch_err:
+                logger.warning(f"Could not patch SAM3 Block: {patch_err}")
 
         self.models_loaded = True
         logger.info("All models loaded successfully.")
