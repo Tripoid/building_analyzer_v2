@@ -56,8 +56,9 @@ pip install git+https://github.com/facebookresearch/sam3.git -q
 echo "  ✅ SAM3.1 installed"
 
 # SAM2 — still required for AutoMaskGenerator (CLIPSeg+AMG material fusion)
+# PyPI wheel is pre-compiled — much faster than building from GitHub source.
 echo "  Installing SAM2..."
-pip install git+https://github.com/facebookresearch/sam2.git -q
+pip install sam-2 -q
 echo "  ✅ SAM2 installed"
 
 # Download SAM2 large weights via HuggingFace Hub (faster than fbaipublicfiles CDN)
