@@ -60,15 +60,13 @@ echo "  Installing SAM2..."
 pip install git+https://github.com/facebookresearch/sam2.git -q
 echo "  ✅ SAM2 installed"
 
-# Download SAM2 large weights via aria2c (16 threads) or wget fallback
+# Download SAM2 large weights via HuggingFace Hub (faster than fbaipublicfiles CDN)
 if [ ! -f sam2_hiera_large.pt ]; then
-    echo "  Downloading SAM2 large weights (~850 MB)..."
-    SAM2_URL="https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
-    if command -v aria2c &> /dev/null; then
-        aria2c -x 16 -s 16 -k 1M "$SAM2_URL" -o sam2_hiera_large.pt
-    else
-        wget -q "$SAM2_URL" -O sam2_hiera_large.pt
-    fi
+    echo "  Downloading SAM2 large weights (~850 MB) from HuggingFace..."
+    huggingface-cli download facebook/sam2-hiera-large \
+        sam2_hiera_large.pt \
+        --local-dir . \
+        --local-dir-use-symlinks False
     echo "  ✅ SAM2 large weights downloaded"
 fi
 
