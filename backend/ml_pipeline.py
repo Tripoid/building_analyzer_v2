@@ -16,7 +16,6 @@ import torch
 import gc
 import os
 import uuid
-import contextlib
 import numpy as np
 from PIL import Image
 from typing import Dict, List, Tuple, Optional, Any
@@ -267,11 +266,39 @@ class FacadeAnalyzer:
         self._sam3_processor = None
         self._sam3_model = None
 
-    def _autocast(self):
-        """Return a bfloat16 autocast context on CUDA, no-op on CPU."""
-        if self.device == "cuda":
-            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-        return contextlib.nullcontext()
+    @staticmethod
+    def _cast_all_to_bf16(obj, _visited=None):
+        """Recursively cast every nn.Module to bfloat16.
+
+        nn.Module.bfloat16() only reaches *registered* submodules.
+        SAM3's ViT stores transformer blocks in a plain Python list, so they
+        are NOT registered and are skipped by the standard cast.  This helper
+        walks every attribute (including plain lists/dicts) so that all blocks'
+        norm2 and mlp weights are cast alongside the registered layers.
+        """
+        if _visited is None:
+            _visited = set()
+        if id(obj) in _visited:
+            return
+        _visited.add(id(obj))
+
+        if isinstance(obj, torch.nn.Module):
+            for p in obj.parameters(recurse=False):
+                p.data = p.data.to(torch.bfloat16)
+            for key in list(obj._buffers):
+                if obj._buffers[key] is not None:
+                    obj._buffers[key] = obj._buffers[key].to(torch.bfloat16)
+            for attr in vars(obj).values():
+                if isinstance(attr, torch.nn.Module):
+                    FacadeAnalyzer._cast_all_to_bf16(attr, _visited)
+                elif isinstance(attr, (list, tuple)):
+                    for item in attr:
+                        if isinstance(item, torch.nn.Module):
+                            FacadeAnalyzer._cast_all_to_bf16(item, _visited)
+                elif isinstance(attr, dict):
+                    for v in attr.values():
+                        if isinstance(v, torch.nn.Module):
+                            FacadeAnalyzer._cast_all_to_bf16(v, _visited)
 
     def load_models(self):
         """Load and cache all ML models. Call once at startup."""
@@ -284,15 +311,11 @@ class FacadeAnalyzer:
         self._sam3_model = build_sam3_image_model().to(self.device)
         self._sam3_processor = Sam3Processor(self._sam3_model)
 
-        # Ensure consistent bfloat16 dtype across all model components on CUDA.
-        # SAM3 image encoder internally produces bfloat16 activations; if any
-        # submodule (including inside Sam3Processor) has float32 params the
-        # matmul fails. Cast every nn.Module we own to bfloat16 on CUDA.
         if self.device == "cuda":
-            for obj in (self._sam3_model, self._sam3_processor):
-                if isinstance(obj, torch.nn.Module):
-                    obj.bfloat16()
-            logger.info("SAM3 components cast to bfloat16 for CUDA.")
+            # Standard cast reaches registered modules only.
+            # _cast_all_to_bf16 also reaches blocks stored in plain Python lists.
+            FacadeAnalyzer._cast_all_to_bf16(self._sam3_model)
+            logger.info("SAM3 model fully cast to bfloat16 (registered + unregistered).")
 
         self.models_loaded = True
         logger.info("All models loaded successfully.")
@@ -343,31 +366,30 @@ class FacadeAnalyzer:
         detections = []
 
         try:
-            with self._autocast():
-                inference_state = self._sam3_processor.set_image(image)
+            inference_state = self._sam3_processor.set_image(image)
 
-                for class_key, prompt in GEOMETRY_SAM3_PROMPTS.items():
-                    output = self._sam3_processor.set_text_prompt(
-                        state=inference_state, prompt=prompt
-                    )
-                    masks = output.get("masks")
-                    scores = output.get("scores")
-                    boxes = output.get("boxes")
-                    if masks is None or len(masks) == 0:
+            for class_key, prompt in GEOMETRY_SAM3_PROMPTS.items():
+                output = self._sam3_processor.set_text_prompt(
+                    state=inference_state, prompt=prompt
+                )
+                masks = output.get("masks")
+                scores = output.get("scores")
+                boxes = output.get("boxes")
+                if masks is None or len(masks) == 0:
+                    continue
+
+                for i, (mask, score) in enumerate(zip(masks, scores)):
+                    if float(score) < threshold:
                         continue
-
-                    for i, (mask, score) in enumerate(zip(masks, scores)):
-                        if float(score) < threshold:
-                            continue
-                        m = np.asarray(mask, dtype=bool)
-                        if np.any(m):
-                            geom_masks[class_key] |= m
-                            box = boxes[i].tolist() if boxes is not None and len(boxes) > i else []
-                            detections.append({
-                                "class": class_key,
-                                "score": float(score),
-                                "box": box,
-                            })
+                    m = np.asarray(mask, dtype=bool)
+                    if np.any(m):
+                        geom_masks[class_key] |= m
+                        box = boxes[i].tolist() if boxes is not None and len(boxes) > i else []
+                        detections.append({
+                            "class": class_key,
+                            "score": float(score),
+                            "box": box,
+                        })
         except Exception:
             import traceback
             logger.error("detect_geometry failed:\n" + traceback.format_exc())
@@ -909,26 +931,25 @@ class FacadeAnalyzer:
         result_masks = {k: np.zeros(original_size, dtype=bool) for k in prompts_map}
 
         try:
-            with self._autocast():
-                inference_state = self._sam3_processor.set_image(image)
+            inference_state = self._sam3_processor.set_image(image)
 
-                for class_key, prompt in prompts_map.items():
-                    output = self._sam3_processor.set_text_prompt(
-                        state=inference_state, prompt=prompt
-                    )
-                    masks = output.get("masks")
-                    scores = output.get("scores")
-                    if masks is None or len(masks) == 0:
+            for class_key, prompt in prompts_map.items():
+                output = self._sam3_processor.set_text_prompt(
+                    state=inference_state, prompt=prompt
+                )
+                masks = output.get("masks")
+                scores = output.get("scores")
+                if masks is None or len(masks) == 0:
+                    continue
+
+                for mask, score in zip(masks, scores):
+                    if float(score) < threshold:
                         continue
-
-                    for mask, score in zip(masks, scores):
-                        if float(score) < threshold:
-                            continue
-                        m = np.asarray(mask, dtype=bool)
-                        if region_mask is not None:
-                            m = m & region_mask
-                        if np.any(m):
-                            result_masks[class_key] |= m
+                    m = np.asarray(mask, dtype=bool)
+                    if region_mask is not None:
+                        m = m & region_mask
+                    if np.any(m):
+                        result_masks[class_key] |= m
         except Exception:
             import traceback
             logger.error("_sam3_segment failed:\n" + traceback.format_exc())
